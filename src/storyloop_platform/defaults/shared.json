@@ -58,7 +58,6 @@
   },
   "routes": {
     "single_turn": "story",
-    "adjudication": "story",
     "narration": "story",
     "prologue": "story",
     "followup_actions": "story"
