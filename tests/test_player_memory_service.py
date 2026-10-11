@@ -165,7 +165,8 @@ def test_worker_settles_extraction_and_does_not_bill_player(fails):
         jobs.batches.append(batch)
         service = PlayerMemoryService(memory, jobs, True, telemetry, OperationSupervisor())
         assert await service.preferences_for("player") == ("old preference",)
-        memory.rows["player"] = [{"text": "new preference"}]
+        if not fails:
+            memory.rows["player"] = [{"text": "new preference"}]
         memory.error = fails
         worker = asyncio.create_task(service.run_worker())
         try:
@@ -267,4 +268,151 @@ def test_repeated_worker_cancellation_preserves_real_batch_and_close_guard():
         assert jobs.completed == [batch]
         service.close()
         assert memory.closed
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("mutation", ["clear", "disable", "disable_enable", "batch"])
+def test_inflight_preferences_cannot_publish_after_player_mutation(mutation):
+    async def run():
+        memory, jobs = FakeMemory(), FakeJobs()
+        jobs.set_enabled("player", True)
+        memory.rows["player"] = [{"text": "old preference"}]
+        captured, release = threading.Event(), threading.Event()
+        original_list = memory.list_memories
+
+        def held_snapshot(player_id):
+            rows = list(original_list(player_id))
+            if player_id == "player" and not captured.is_set():
+                captured.set()
+                assert release.wait(5)
+            return rows
+
+        memory.list_memories = held_snapshot
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        read = asyncio.create_task(service.preferences_for("player"))
+        try:
+            assert await asyncio.to_thread(captured.wait, 5)
+            if mutation == "clear":
+                await service.clear("player")
+            elif mutation.startswith("disable"):
+                await service.set_enabled("player", False)
+                if mutation == "disable_enable":
+                    memory.rows["player"] = [{"text": "new preference"}]
+                    await service.set_enabled("player", True)
+            else:
+                batch = MemoryBatch("player", (("game", "request", "preference"),))
+                jobs.batches.append(batch)
+                memory.remember = lambda *args: memory.rows.update(
+                    {"player": [{"text": "new preference"}]})
+                assert await service._run_batch() == batch
+            # A stalled read for one player does not prevent another player's read.
+            jobs.set_enabled("other", True)
+            memory.rows["other"] = [{"text": "other preference"}]
+            assert await service.preferences_for("other") == ("other preference",)
+        finally:
+            release.set()
+            old_result = await read
+        assert old_result == ()
+        expected = ("new preference",) if mutation in {"disable_enable", "batch"} else ()
+        assert await service.preferences_for("player") == expected
+        service.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["cancel", "error"])
+def test_clear_invalidates_cache_when_provider_finishes_without_normal_return(outcome):
+    async def run():
+        memory, jobs = FakeMemory(), FakeJobs()
+        jobs.set_enabled("player", True)
+        memory.rows["player"] = [{"text": "old preference"}]
+        cleared, release = threading.Event(), threading.Event()
+
+        def held_clear(player_id):
+            memory.rows.pop(player_id, None)
+            cleared.set()
+            assert release.wait(5)
+            if outcome == "error":
+                raise RuntimeError("cleanup failed after deletion")
+
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        assert await service.preferences_for("player") == ("old preference",)
+        memory.clear = held_clear
+        clearing = asyncio.create_task(service.clear("player"))
+        try:
+            assert await asyncio.to_thread(cleared.wait, 5)
+            if outcome == "cancel":
+                clearing.cancel()
+                with pytest.raises(RuntimeError, match="active"):
+                    service.close()
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError if outcome == "cancel" else RuntimeError):
+                await clearing
+        assert await service.preferences_for("player") == ()
+        service.close()
+    asyncio.run(run())
+
+
+def test_failed_extraction_invalidates_cache_after_partial_provider_write():
+    async def run():
+        memory, jobs = FakeMemory(), FakeJobs()
+        jobs.set_enabled("player", True)
+        memory.rows["player"] = [{"text": "old preference"}]
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        assert await service.preferences_for("player") == ("old preference",)
+
+        def partial_remember(*args):
+            memory.rows["player"] = [{"text": "new preference"}]
+            raise RuntimeError("extraction failed after write")
+
+        memory.remember = partial_remember
+        batch = MemoryBatch("player", (("game", "request", "preference"),))
+        jobs.batches.append(batch)
+        assert await service._run_batch() == batch
+        assert jobs.failed == [batch]
+        assert await service.preferences_for("player") == ("new preference",)
+        service.close()
+    asyncio.run(run())
+
+
+def test_read_started_during_clear_cannot_repopulate_after_clear_settles():
+    async def run():
+        memory, jobs = FakeMemory(), FakeJobs()
+        jobs.set_enabled("player", True)
+        memory.rows["player"] = [{"text": "old preference"}]
+        clearing_started, finish_clear = threading.Event(), threading.Event()
+        snapshot_taken, finish_read = threading.Event(), threading.Event()
+        original_list = memory.list_memories
+
+        def held_clear(player_id):
+            clearing_started.set()
+            assert finish_clear.wait(5)
+            memory.rows.pop(player_id, None)
+
+        def held_snapshot(player_id):
+            rows = list(original_list(player_id))
+            if not snapshot_taken.is_set():
+                snapshot_taken.set()
+                assert finish_read.wait(5)
+            return rows
+
+        memory.clear, memory.list_memories = held_clear, held_snapshot
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        clearing = asyncio.create_task(service.clear("player"))
+        read = None
+        try:
+            assert await asyncio.to_thread(clearing_started.wait, 5)
+            read = asyncio.create_task(service.preferences_for("player"))
+            assert await asyncio.to_thread(snapshot_taken.wait, 5)
+            finish_clear.set()
+            assert (await clearing)["memories"] == []
+        finally:
+            finish_clear.set()
+            finish_read.set()
+            await asyncio.gather(clearing, return_exceptions=True)
+            if read is not None:
+                old_result = await read
+        assert old_result == ()
+        assert await service.preferences_for("player") == ()
+        service.close()
     asyncio.run(run())
