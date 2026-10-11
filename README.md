@@ -2,9 +2,25 @@
 
 [中文](README.md) · [English](README.en.md)
 
-StoryLoop Platform 是面向 AI 互动叙事的玩家与创作者平台，提供剧本管理、单人存档、账号、积分结算和网页体验。叙事生成与事件执行通过独立的 [StoryLoop Harness](https://github.com/storyloop0/storyloop-harness) 公共接口接入。
+**把一个剧本变成可以自由输入、持续游玩的 AI 互动故事。** 玩家在网页中选择剧本、创建单人存档，与角色交谈或尝试行动，再根据故事回应继续探索；创作者编写角色、世界状态与剧情规则，上传剧本并提交版本供审核发布。
 
-当前普通回合采用 `single_call`：分别投影玩家和相关 NPC 可见的历史与经历，组合场景上下文，由共享场景模型一次返回结构化提议，再由后端校验、提交事件并更新状态与观察。角色上下文是身份、经历与信息视角的数据；每个 NPC 不对应一个独立运行的 ReAct 实例。
+例如，示例剧本[港口 NPC 对话](examples/freeform/manifest.json)从尚未开市的广场开始。你可以输入“问码头工今天有什么消息”，也可以观察码头或改变周围事物。交谈和行动推进故事时间，开市钟响时，剧本中的定时事件会改变港口状态。这是玩法示意，具体角色回应由所选模型生成。
+
+[StoryLoop Harness](https://github.com/storyloop0/storyloop-harness) 提供可独立嵌入的叙事运行时；本仓库把它接成完整应用，加入网页、账号、内容目录、SQL 存档和积分结算。想直接体验或运营故事平台，从这里开始；想把叙事执行嵌入其他应用，可从 Harness 开始。
+
+## 玩家与创作者如何使用
+
+```mermaid
+flowchart TB
+    Author["创作者：编写并上传私有剧本"] --> Private["私有试玩"]
+    Author --> Review["提交不可变版本：隔离试玩与审核"]
+    Review --> Publish["发布公开版本：玩家选择剧本"]
+    Publish --> Save["创建或续玩单人存档"]
+    Save --> Play["输入行动并阅读回应"]
+    Play --> Save
+```
+
+私有剧本可以自行游玩；公开目录通过内容审核流程发布版本。每个存档保存自己的历史和状态，网页支持交互与小说两种展示方式。
 
 ## 当前能力
 
@@ -19,21 +35,64 @@ StoryLoop Platform 是面向 AI 互动叙事的玩家与创作者平台，提供
 
 ## 架构与边界
 
-```text
-React / Vite → FastAPI 平台 → StoryLoop Harness
-                    ↓          上下文投影 → 生成 → 校验 → 提交
-              SQL 存档与账务
+```mermaid
+flowchart TB
+    UI["React / Vite：玩家与创作者界面"] --> Platform["FastAPI 平台：账号、内容、配置与路由、结算"]
+    Platform --> Harness["Harness：上下文投影、叙事执行、校验、AgentScope 传输"]
+    Harness --> Model["OpenAI 兼容模型服务"]
+    Platform --> SQL["平台 SQL：存档、事件、状态、账务"]
+    Harness --> Store["平台提供的 GameStore 适配器"]
+    Store --> SQL
+    Platform -.-> Mem["可选 Mem0：经授权的玩家偏好"]
+    Platform -.-> Trace["可选 Langfuse：追踪"]
 ```
 
-平台负责鉴权、内容生命周期、模型适配、持久化、计费和部署；harness 负责可复用的叙事运行契约。当前依赖范围为 `storyloop-harness>=0.2,<0.3`，`pyproject.toml` 与 `uv.lock` 固定源码提交 `94b0c749dad7811dc765431f20f77eb50dc6f049`。`scripts/build_harness.py` 从该提交构建 wheel；下方安装命令显式使用这个产物。
+平台负责鉴权、内容生命周期、模型配置与路由、持久化、计费和部署；Harness 负责叙事运行契约、上下文投影、事件执行及 AgentScope 模型传输适配。当前依赖范围为 `storyloop-harness>=0.2,<0.3`，`pyproject.toml` 与 `uv.lock` 固定源码提交 `951e3578ec512acb0fa681c5a8d4cc196e5ba342`。`scripts/build_harness.py` 从该提交构建 wheel；下方安装命令显式使用这个产物。
+
+<details>
+<summary>服务装配与关闭生命周期</summary>
 
 `bootstrap.build_portal` 围绕同一个 SQL Engine 组装生产资源并负责关闭。`PlayerPortal` 完成请求鉴权后，把存档生命周期与查询交给 `GameplayService`，把回合执行与恢复交给 `TurnExecutionService`。两个服务共享内容访问、玩家操作锁与 `GameplayRuntime`；测试通过 `runtime_factory_builder` 注入离线运行时或模型实现。
 
 HTTP 与 CLI 使用同一个 `portal.operations` 管理耗时操作；请求断开不会取消已接收的回合。上传与序章生成采用异步命令，文件和记忆线程按实际完成状态跟踪。`await portal.shutdown()` 先停止接收新操作并通知记忆 worker，再等待 30 秒、取消后再等待 5 秒；仍未结束则显式报错并保留资源，由进程管理器决定终止。同步 `portal.close()` 只允许在操作已结束时调用。上述时限不包含服务器自身的请求排空和同步资源释放。
 
-共享场景模型会看到多个角色的上下文，视角投影和行为约束不构成角色之间的硬信息隔离。长局上下文从已提交历史中选择近期与相关经历，原始事件保留；当前世界书使用 JSON 条目检索。普通回合的一次场景生成也不代表开场、行动建议或其他功能都只调用一次模型。
+</details>
 
 项目仍在孵化，API、配置和存储格式可直接调整，不承诺向后兼容。当前唯一回合引擎为 `single_call`；包含旧 `npc_reply` 待办的存档会被拒绝，应重新创建存档。
+
+## 一次普通回合如何执行
+
+普通回合采用 `single_call`：玩家与相关 NPC 的可见历史、经历和世界书条目被投影到同一个场景请求中。模型给出结构化提议，Harness 校验并通过平台存储适配器提交事件、状态与观察；平台随后处理用量和积分结算。
+
+```mermaid
+sequenceDiagram
+    participant Player as 玩家网页
+    participant Platform as 平台
+    participant Harness as Harness
+    participant Model as 场景模型
+    participant SQL as SQL 存储
+    Player->>Platform: 行动文本与请求 ID
+    Platform->>Platform: 鉴权、存档与执行设置
+    Platform->>Harness: TurnInput 与运行资源
+    Harness->>SQL: 读取已提交历史与状态
+    Harness->>Harness: 投影上下文、估算请求预算
+    alt 必需上下文超过预算
+        Harness-->>Platform: 安全错误，不发出该场景模型请求
+        Platform-->>Player: 回合错误
+    else 请求可容纳
+        Harness->>Model: 场景请求
+        Model-->>Harness: 结构化提议
+        Harness->>Harness: 校验提议
+        Harness->>SQL: 提交通过校验的事件、状态与观察
+        Harness-->>Platform: 执行结果与用量
+        Platform->>SQL: 保存结算记录
+        Platform-->>Player: 故事结果与进度
+    end
+```
+
+长局上下文从已提交历史中选择近期与相关经历，原始事件保留；当前世界书检索 JSON 条目。
+
+图中是成功普通场景及预算拒绝路径，省略校验失败、重试和其他剧情工作。世界提交与积分结算是分开的步骤，不承诺整场战役原子提交。NPC 上下文代表身份、经历和信息视角，每个 NPC 不对应独立 ReAct 实例；共享模型可看到多个角色的上下文，因此不构成角色之间的硬信息隔离。一次普通场景生成也不代表开场、行动建议或整场战役都只有一次模型调用。
 
 ## 快速开始
 
@@ -56,9 +115,14 @@ $env:STORY_MODEL_API_KEY = "your-api-key"
 .\.venv\Scripts\python.exe -m storyloop_platform.cli.portal_api --catalog examples/catalog.json
 ```
 
+<details>
+<summary>本地启动参数与凭据选择规则</summary>
+
 本地 CLI 首次启动使用包内默认配置。缺少密钥时可在交互终端输入，Windows 通过 DPAPI 保护记住的凭据。非空的供应商密钥环境变量优先，其次是记住的凭据，最后是交互输入；非交互运行不会询问。非空的 `STORY_MODEL_BASE_URL` 覆盖默认供应商端点。
 
 本地剧本目录选择优先级为 `--catalog`、`STORY_CATALOG`、记住的目录。不传 `--config` 时，成功启动会记住自定义配置路径（或使用包内默认配置）和数据库路径；`--db` 覆盖记住的数据库。显式传入 `--config` 会重新选择，需要同时提供 `--catalog` 或 `STORY_CATALOG`，不会继承记住的配置或数据库路径。线上启动使用 `--profile online`，不读取本地记住的路径、不交互询问密钥，并在创建资源前验证必要的部署环境变量。`--profile` 必须与配置的 `environment` 一致。
+
+</details>
 
 另开终端启动前端：
 
@@ -77,6 +141,9 @@ macOS/Linux 用 `python3.12 -m venv .venv` 创建环境，将 Python 路径替�
 `default_settings("local")` 和 `default_settings("online")` 加载包内共享模型配置及对应部署配置；`load_settings(path)` 应用外部 JSON 覆盖，省略 `environment` 表示本地。`config/local.json` 与 `config/online.json` 只包含存储、HTTP 和玩家记忆的少量部署差异，不复制模型目录。`examples/catalog.json` 的 `freeform` 和 `scheduled` 剧本包路径相对于该目录文件所在目录。
 
 供应商定义端点和凭据环境变量引用；模型配置引用供应商，定义模型名称、生成参数、上下文窗口、超时重试、接口适配选项和价格快照；任务路由（`single_turn`、`adjudication`、`narration`、`prologue`、`followup_actions`）选择聊天模型配置。玩家记忆分别选择提炼与向量模型配置。`credits` 定义赠送积分和每人民币对应积分，模型的 `rate` 定义供应商价格、缓存输入价格、倍率与价格版本。内置价格和能力是示例快照，未经实时验证，不构成当前价格或能力保证。
+
+<details>
+<summary>模型覆盖示例、合并规则与访问检查</summary>
 
 完整的模型覆盖示例如下，保存为 `config/custom.local.json`。它使用与默认配置相同的示例供应商和模型；换用其他服务时，应调整端点、模型、能力参数和价格：
 
@@ -138,6 +205,8 @@ macOS/Linux 用 `python3.12 -m venv .venv` 创建环境，将 Python 路径替�
 
 此命令会实际请求供应商，可能产生费用。省略 `--task` 会检查全部已配置路由；`--help` 可离线运行。模型检查无需数据库或玩家记忆资源，包括使用 `--profile online` 时。
 
+</details>
+
 ## 部署示例
 
 API Docker 构建使用 CI 同版本的 uv 0.11.25，从 `uv.lock` 导出 `agents,portal,online,observability,player-memory` 运行依赖，下载并校验哈希，再禁用依赖解析安装第三方包与两个项目 wheel。最终阶段只复制安装后的环境；Git、源码、wheelhouse 和测试依赖留在构建阶段。运行依赖锁不约束 PEP 517 构建环境中的 `setuptools>=77`，镜像标签和系统包也未固定，因此不承诺逐字节可复现。
@@ -187,7 +256,11 @@ deploy/ecs/             Docker Compose 部署资源
 
 离线功能测试不证明真实模型叙事质量、角色信息约束效果或生产环境的恢复能力；真实模型、PostgreSQL 和部署环境需单独验证。当前建议使用单个 API worker；结算快照支持已完成回合的恢复，但尚无完整的逐模型调用日志，也不保证跨进程或多 worker 恢复。当前上下文选择也会受窗口预算影响。
 
-后续可探索上下文来源、选择原因与预算明细，长局记忆策略，叙事质量与成本对照，以及更多故障恢复案例。这些是未来方向，尚不作为已有能力承诺。
+普通场景生成使用完整请求的估算预算：有效窗口取存档偏好、`single_turn` 路由模型窗口与运行时窗口的最小值。该模型的 `generation.max_tokens` 预留输出（未设置时为 4096），并保留 256 token 安全余量。配置与存档设置更新会拒绝无法容纳输出预留的窗口；部署上限降低后，存档偏好在读取时收紧，不改写 SQL 行。支持的 AgentScope 适配器以 `max_completion_tokens` 发送输出上限，并在 HTTP 前检查 SDK 展开后的请求。其他生成器和整场战役费用不属于此预算范围。
+
+开发者可对实际工厂构建的引擎调用 `engine.project_context(TurnInput(game_id, text, turn_id, package.version))`。此同步只读方法返回独立请求及可序列化的 `projection.report.to_dict()`，包含来源 ID、选择与裁剪原因、分项估算和估算器/策略标识；需要玩家偏好时使用现有显式偏好作用域。报告仅包含元数据，不包含来源正文，仅用于开发者检查；必需材料溢出时，玩家 HTTP/SSE 接口只返回固定安全错误。token 数是保守启发式估算，不是供应商 tokenizer 测量。必需材料溢出会阻止该场景的模型调用及世界写入；更早的战役工作可能已经提交。
+
+后续可探索长局记忆策略，叙事质量与成本对照，以及更多故障恢复案例。
 
 ## 许可证
 

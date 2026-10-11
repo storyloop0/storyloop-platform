@@ -62,10 +62,10 @@ class SaveGenerationSettingsTests(unittest.TestCase):
                         patch("storyloop_platform.gameplay.factory.TurnEngine", wraps=TurnEngine) as engine_factory:
                     first_session = portal.gameplay.factory.engine(item, package, "game-1")
                     self.assertEqual(factory.call_args.kwargs["temperature"], 0.8)
-                    self.assertEqual(engine_factory.call_args.kwargs["context_window_tokens"], 65536)
+                    self.assertEqual(engine_factory.call_args.kwargs["context_budget"].context_window_tokens, 65536)
                     client.put("/v1/saves/game-1/settings", headers=own,
                         json={"temperature": 1.2, "context_window_tokens": 32768})
                     second_session = portal.gameplay.factory.engine(item, package, "game-1")
                     self.assertIsNot(first_session, second_session)
                     self.assertEqual(factory.call_args.kwargs["temperature"], 1.2)
-                    self.assertEqual(engine_factory.call_args.kwargs["context_window_tokens"], 32768)
+                    self.assertEqual(engine_factory.call_args.kwargs["context_budget"].context_window_tokens, 32768)

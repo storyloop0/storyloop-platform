@@ -19,6 +19,46 @@ from test_scenario_lifecycle_concurrency import archive
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize('stream', [False, True])
+def test_budget_overflow_is_safe_nonretryable_and_preserves_world(portal, stream):
+    from unittest.mock import patch
+    from sqlalchemy import text
+    from scenario_fixtures import synthetic_package
+    player = portal.register('budget-reader', 'password-123')
+    game_id = asyncio.run(portal.create_save(player['token'], 'npc-chat'))['game_id']
+    factory = portal.gameplay.factory
+    model = AsyncMock()
+    factory.offline_models.model = model
+    factory.invalidate(game_id)
+    original = factory.engine
+    marker = 'PRIVATE_REQUIRED_RULE'
+    book = json.loads((ROOT / 'examples/freeform/worldbook.json').read_text(encoding='utf-8'))
+    book['entries'].append({'id': 'required', 'kind': 'rule', 'visibility': 'public', 'text': marker * 20000})
+    oversized = synthetic_package(worldbook=book)
+    # Use the actual factory/projector with an oversized authored mandatory rule.
+    def bounded(item, package, save, **kwargs):
+        from dataclasses import replace
+        return original(item, replace(package, worldbook=oversized.worldbook), save, **kwargs)
+
+    def state():
+        with portal.accounts.engine.connect() as db:
+            return {table: tuple(db.execute(text(f'SELECT * FROM {table}')).fetchall())
+                    for table in ('games', 'events', 'observations', 'agent_contexts',
+                                  'turn_settlement_intents', 'portal_turns', 'credit_ledger')}
+    before = state()
+    with patch.object(factory, 'engine', side_effect=bounded), TestClient(create_app(portal), base_url='http://127.0.0.1') as client:
+        response = client.post(f'/v1/saves/{game_id}/turns' + ('/stream' if stream else ''),
+            headers={'Authorization': f"Bearer {player['token']}"}, json={'text': 'hello', 'request_id': 'budget'})
+        payload = ([json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')][-1]
+                   if stream else response.json())
+    assert payload['retryable'] is False
+    assert payload['commit_state'] == 'unknown'
+    assert payload['code'] == 'CONTEXT_BUDGET_EXCEEDED'
+    assert marker not in response.text and 'decisions' not in response.text
+    assert state() == before
+    model.assert_not_called()
+
+
 @pytest.fixture
 def portal(tmp_path, monkeypatch):
     monkeypatch.setenv("STORY_UPLOAD_DIR", str(tmp_path / "uploads"))

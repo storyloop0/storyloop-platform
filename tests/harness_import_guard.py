@@ -6,9 +6,11 @@ PUBLIC_MODULES = frozenset({
     'storyloop_harness', 'storyloop_harness.contracts', 'storyloop_harness.ports',
     'storyloop_harness.advanced', 'storyloop_harness.generation',
     'storyloop_harness.telemetry', 'storyloop_harness.usage', 'storyloop_harness.testing',
+    'storyloop_harness.context',
 })
 PRIVATE_ROOTS = frozenset({'core', 'runtime', 'world', 'agents', 'models', 'adapters'})
 PRIVATE_TESTING_MODULES = frozenset({'memory', 'offline_model', 'projection'})
+PRIVATE_CONTEXT_MODULES = frozenset({'contracts', 'types', 'budget', 'projection', 'selection', 'history', 'metrics'})
 
 
 def harness_import_violations(source):
@@ -26,7 +28,8 @@ def harness_import_violations(source):
             for item in node.names:
                 aliases[item.asname or item.name] = f'{module}.{item.name}'
                 if ((module == 'storyloop_harness' and item.name in PRIVATE_ROOTS) or
-                        (module == 'storyloop_harness.testing' and item.name in PRIVATE_TESTING_MODULES)):
+                        (module == 'storyloop_harness.testing' and item.name in PRIVATE_TESTING_MODULES) or
+                        (module == 'storyloop_harness.context' and item.name in PRIVATE_CONTEXT_MODULES)):
                     violations.add((node.lineno, f'{module}.{item.name}'))
             if module.startswith('storyloop_harness') and module not in PUBLIC_MODULES:
                 violations.add((node.lineno, module))
@@ -44,7 +47,9 @@ def harness_import_violations(source):
         return (len(parts) > 1 and parts[0] == 'storyloop_harness' and (
             parts[1] in PRIVATE_ROOTS or
             (len(parts) > 2 and parts[1] == 'testing' and
-             parts[2] in PRIVATE_TESTING_MODULES)))
+             parts[2] in PRIVATE_TESTING_MODULES) or
+            (len(parts) > 2 and parts[1] == 'context' and
+             parts[2] in PRIVATE_CONTEXT_MODULES)))
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):

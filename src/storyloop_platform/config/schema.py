@@ -203,6 +203,15 @@ class PlatformSettings(SettingsModel):
                 raise ValueError(
                     f"models.{name}.rate is required when credits are enabled"
                 )
+        profile = self.model_for("single_turn")
+        output = 4096 if profile.generation.max_tokens is None else profile.generation.max_tokens
+        window = min(profile.context_window_tokens, self.runtime.context_window_tokens)
+        if output + 256 >= window:
+            raise ValueError(
+                f"routes.single_turn generation.max_tokens {output} plus safety margin 256 "
+                f"must be below effective context window {window}; increase model/runtime "
+                "context_window_tokens or reduce single_turn generation.max_tokens"
+            )
         memory = self.player_memory
         for field, expected in [
             ("extraction_profile", ChatModelSettings),

@@ -8,6 +8,7 @@ from typing import Protocol
 from storyloop_harness import GameStore, ScenarioPackage, TurnEngine, TurnInput, TurnOutcome
 from storyloop_harness.advanced import TurnProgress, StoryClock, RunResult
 from storyloop_harness.generation import ActionOption
+from storyloop_harness.context import ContextBudget, ContextProjection
 from storyloop_harness.telemetry import Telemetry
 
 from storyloop_platform.config import PlatformSettings, ModelFactory
@@ -24,6 +25,7 @@ from storyloop_platform.runtime.campaign import CampaignProgram, CampaignSession
 
 class TurnExecutor(Protocol):
     package: ScenarioPackage
+    def project_context(self, turn: TurnInput) -> ContextProjection: ...
 
     async def run_turn(self, turn: TurnInput, *, progress: TurnProgress | None = None,
                        max_tick: int | None = None) -> TurnOutcome: ...
@@ -36,6 +38,7 @@ class TurnExecutor(Protocol):
 class GameplayRuntime(Protocol):
     def default_generation_settings(self) -> SaveGenerationSettings: ...
     def generation_settings(self, game_id: str) -> SaveGenerationSettings: ...
+    def context_budget(self, settings: SaveGenerationSettings) -> ContextBudget: ...
     def invalidate(self, game_id: str) -> None: ...
     def require_credentials(self) -> None: ...
     def engine(self, item: GameListing, package: ScenarioPackage, game_id: str, *,
@@ -64,8 +67,8 @@ class RuntimeFactory:
         self.models = models
         self.telemetry = telemetry
 
-        self._turn_engines: dict[tuple[Path, str, SaveGenerationSettings, bool], TurnExecutor] = {}
-        self._campaign_sessions: dict[tuple[Path, str, SaveGenerationSettings], tuple[CampaignProgram, CampaignSession]] = {}
+        self._turn_engines: dict[tuple, TurnExecutor] = {}
+        self._campaign_sessions: dict[tuple, tuple[CampaignProgram, CampaignSession]] = {}
 
     def default_generation_settings(self) -> SaveGenerationSettings:
         window = min(self.settings.context_window_for("single_turn"),
@@ -75,14 +78,33 @@ class RuntimeFactory:
         return SaveGenerationSettings(temperature, window)
 
     def generation_settings(self, game_id: str) -> SaveGenerationSettings:
-        return self.generation_settings_store.get(game_id, self.default_generation_settings())
+        defaults = self.default_generation_settings()
+        saved = self.generation_settings_store.get(game_id, defaults)
+        return SaveGenerationSettings(saved.temperature,
+                                      min(saved.context_window_tokens, defaults.context_window_tokens))
+
+    def context_budget(self, settings: SaveGenerationSettings) -> ContextBudget:
+        window = min(settings.context_window_tokens,
+                     self.default_generation_settings().context_window_tokens)
+        output = self.settings.model_for("single_turn").generation.max_tokens
+        output = 4096 if output is None else output
+        try:
+            return ContextBudget(context_window_tokens=window, output_tokens=output)
+        except ValueError:
+            raise ValueError(
+                f"single_turn context window {window} must exceed generation.max_tokens "
+                f"{output} plus safety margin 256; increase the save/model/runtime window "
+                "or reduce single_turn generation.max_tokens"
+            ) from None
 
     def engine(self, item: GameListing, package: ScenarioPackage, game_id: str,
                      *, overnight_requires_rest: bool = False,
                      program: CampaignProgram | None = None) -> TurnEngine:
         require_supported_save(self.store, game_id)
         settings = self.generation_settings(game_id)
-        key = (item.package_path, game_id, settings, overnight_requires_rest)
+        budget = self.context_budget(settings)
+        key = (item.package_path, game_id, settings, budget, overnight_requires_rest,
+               id(program), item.turns_per_story_tick)
         if key in self._turn_engines:
             return self._turn_engines[key]
         self.require_credentials()
@@ -94,7 +116,7 @@ class RuntimeFactory:
             self.models.create_model("single_turn",
                                      temperature=settings.temperature),
             max_responders=self.settings.runtime.max_npc_replies,
-            context_window_tokens=settings.context_window_tokens,
+            context_budget=budget,
             program=program, clock=clock, max_steps=self.settings.runtime.max_steps,
             telemetry=self.telemetry,
         )
@@ -109,7 +131,8 @@ class RuntimeFactory:
     def campaign(self, item: GameListing, package: ScenarioPackage,
                   game_id: str) -> tuple[CampaignProgram, CampaignSession]:
         settings = self.generation_settings(game_id)
-        key = (item.package_path, game_id, settings)
+        key = (item.package_path, game_id, settings, self.context_budget(settings),
+               item.turns_per_story_tick)
         if key in self._campaign_sessions:
             return self._campaign_sessions[key]
         program = CampaignProgram.load(item.package_path / "campaign.json")

@@ -2,9 +2,25 @@
 
 [中文](README.md) · [English](README.en.md)
 
-StoryLoop Platform is a player and creator platform for AI interactive fiction, providing scenario management, single-player saves, accounts, credit settlement, and a web interface. It integrates narrative generation and event execution through the public APIs of the independent [StoryLoop Harness](https://github.com/storyloop0/storyloop-harness).
+**Turn a scenario into an AI story players can explore through free text and ongoing saves.** Players choose a scenario in the browser, create a single-player save, speak to characters or attempt actions, and continue from the story's response. Creators define characters, world state, and story rules, upload packages, and submit versions for review and publication.
 
-Ordinary turns use `single_call`: project the history and experiences visible to the player and relevant NPCs, assemble a scene context, generate one structured proposal with a shared scene model, then validate and commit events, state, and observations in the backend. Character contexts represent identity, experience, and information perspectives; individual NPCs do not run independent ReAct instances.
+For example, the included [Harbor NPC Conversation](examples/freeform/manifest.json) starts in a square before the market opens. You might type “Ask the dockhand what is happening today,” observe the docks, or change something nearby. Conversation and actions advance story time; a scheduled event changes the harbor state when the opening bell rings. This illustrates the gameplay; the selected model generates the actual character response.
+
+[StoryLoop Harness](https://github.com/storyloop0/storyloop-harness) is an independently embeddable narrative runtime. This repository turns it into a complete application with a web interface, accounts, a content catalog, SQL saves, and credit settlement. Start here to play or operate a story platform; start with Harness to embed narrative execution in another application.
+
+## How players and creators use it
+
+```mermaid
+flowchart TB
+    Author["Creator: author and upload private package"] --> Private["Private playtest"]
+    Author --> Review["Submit immutable version: isolated playtest and review"]
+    Review --> Publish["Publish public version: player chooses scenario"]
+    Publish --> Save["Create or resume single-player save"]
+    Save --> Play["Enter action and read response"]
+    Play --> Save
+```
+
+Private scenarios can be played by their owner; public catalog versions follow content review. Each save retains its own history and state, and the web interface offers interactive and novel presentation modes.
 
 ## Current capabilities
 
@@ -19,21 +35,64 @@ Ordinary turns use `single_call`: project the history and experiences visible to
 
 ## Architecture and boundaries
 
-```text
-React / Vite → FastAPI platform → StoryLoop Harness
-                       ↓          projection → generation → validation → commit
-                 SQL saves and accounting
+```mermaid
+flowchart TB
+    UI["React / Vite: player and creator interface"] --> Platform["FastAPI platform: accounts, content, settings and routing, settlement"]
+    Platform --> Harness["Harness: projection, narrative execution, validation, AgentScope transport"]
+    Harness --> Model["OpenAI-compatible model service"]
+    Platform --> SQL["Platform SQL: saves, events, state, accounting"]
+    Harness --> Store["Platform GameStore adapter"]
+    Store --> SQL
+    Platform -.-> Mem["Optional Mem0: consented player preferences"]
+    Platform -.-> Trace["Optional Langfuse: tracing"]
 ```
 
-The platform owns authentication, content lifecycle, model adapters, persistence, billing, and deployment; harness owns the reusable narrative execution contract. The dependency range is `storyloop-harness>=0.2,<0.3`, with source revision `94b0c749dad7811dc765431f20f77eb50dc6f049` pinned in `pyproject.toml` and `uv.lock`. `scripts/build_harness.py` builds a wheel from that revision, and the installation below names that artifact explicitly.
+The platform owns authentication, content lifecycle, model settings and routing, persistence, billing, and deployment; Harness owns the narrative execution contract, context projection, event execution, and AgentScope model transport adapters. The dependency range is `storyloop-harness>=0.2,<0.3`, with source revision `951e3578ec512acb0fa681c5a8d4cc196e5ba342` pinned in `pyproject.toml` and `uv.lock`. `scripts/build_harness.py` builds a wheel from that revision, and the installation below names that artifact explicitly.
+
+<details>
+<summary>Service composition and shutdown lifecycle</summary>
 
 `bootstrap.build_portal` composes production resources around one SQL Engine and owns their cleanup. `PlayerPortal` authenticates requests and delegates save lifecycle and queries to `GameplayService`, and execution and recovery to `TurnExecutionService`. Both services share content access, player operation locks, and a `GameplayRuntime`; tests inject offline runtime/model implementations through `runtime_factory_builder`.
 
 HTTP and CLI share `portal.operations` to own long operations; disconnecting a request does not cancel an admitted turn. Upload and prologue commands are async, with file and memory threads tracked until their actual completion. `await portal.shutdown()` stops admission and requests memory worker stop, waits 30 seconds, then cancels and waits another 5 seconds. Work surviving both deadlines causes a visible failure with resources left open for the process manager to handle. Synchronous `portal.close()` requires completed operations. These deadlines exclude the server's own request drain and synchronous resource disposal.
 
-The shared scene model sees multiple character contexts, so perspective projection and behavioral constraints do not provide hard information isolation between characters. Long-session context selects recent and relevant experiences from committed history while retaining original events; the current worldbook retrieves JSON entries. One ordinary scene generation does not imply that openings, suggestions, or every other feature use only one model call.
+</details>
 
 The project is under active incubation. APIs, configuration, and storage formats may change without backward compatibility guarantees. The only current turn engine is `single_call`; saves containing obsolete `npc_reply` pending work are rejected and should be recreated.
+
+## How an ordinary turn runs
+
+Ordinary turns use `single_call`: history, experiences, and worldbook entries visible to the player and relevant NPCs are projected into one shared scene request. The model proposes structured changes; Harness validates them and commits events, state, and observations through the platform store adapter. The platform then handles usage and credit settlement.
+
+```mermaid
+sequenceDiagram
+    participant Player as Player browser
+    participant Platform as Platform
+    participant Harness as Harness
+    participant Model as Scene model
+    participant SQL as SQL storage
+    Player->>Platform: Action text and request ID
+    Platform->>Platform: Authenticate, select save and execution settings
+    Platform->>Harness: TurnInput and runtime resources
+    Harness->>SQL: Read committed history and state
+    Harness->>Harness: Project context and estimate request budget
+    alt Required context exceeds budget
+        Harness-->>Platform: Safe error, no scene model request
+        Platform-->>Player: Turn error
+    else Request fits
+        Harness->>Model: Scene request
+        Model-->>Harness: Structured proposal
+        Harness->>Harness: Validate proposal
+        Harness->>SQL: Commit validated events, state and observations
+        Harness-->>Platform: Execution result and usage
+        Platform->>SQL: Save settlement record
+        Platform-->>Player: Story result and progress
+    end
+```
+
+Long-session context selects recent and relevant experiences from committed history while retaining original events; the current worldbook retrieves JSON entries.
+
+The diagram shows a successful ordinary scene and budget rejection, omitting validation failures, retries, and other story work. World commits and credit settlement are separate steps; there is no claim of atomic whole-campaign commits. NPC contexts represent identity, experience, and information perspectives, with no independent ReAct instance per NPC. The shared model sees multiple character contexts, so these projections do not provide hard information isolation. One ordinary scene generation does not mean openings, action suggestions, or an entire campaign make only one model call.
 
 ## Quick start
 
@@ -56,9 +115,14 @@ $env:STORY_MODEL_API_KEY = "your-api-key"
 .\.venv\Scripts\python.exe -m storyloop_platform.cli.portal_api --catalog examples/catalog.json
 ```
 
+<details>
+<summary>Local launch selection and credential rules</summary>
+
 The local CLI uses packaged defaults on the first launch. Missing keys can be entered at an interactive prompt; Windows protects remembered credentials with DPAPI. A nonempty provider key environment variable takes priority over remembered credentials, then the prompt. Noninteractive runs cannot prompt. `STORY_MODEL_BASE_URL` overrides the default provider endpoint when nonempty.
 
 Local launch selection is `--catalog`, then `STORY_CATALOG`, then the remembered catalog. Without `--config`, successful local launches remember the custom settings path (or packaged defaults) and database path; `--db` overrides the remembered database. An explicit `--config` starts a fresh selection and requires `--catalog` or `STORY_CATALOG`; it does not inherit remembered settings or database paths. Online launches use `--profile online`, have no remembered local paths or key prompt, and validate required deployment environment values before creating resources. `--profile` must match the settings `environment`.
+
+</details>
 
 Start the frontend in another terminal:
 
@@ -77,6 +141,9 @@ On macOS/Linux, create the environment with `python3.12 -m venv .venv` and repla
 `default_settings("local")` and `default_settings("online")` load shared packaged model defaults plus a deployment profile. `load_settings(path)` applies an external JSON override; omitted `environment` means local. `config/local.json` and `config/online.json` are small storage, HTTP, and player memory overrides, rather than duplicated model catalogs. `examples/catalog.json` references scenario packages `freeform` and `scheduled` relative to the catalog directory.
 
 Providers define endpoints and credential environment references. Model profiles reference a provider and own the model name, generation options, context window, timeout/retry policy, compatibility options, and tariff snapshot. Task routes (`single_turn`, `adjudication`, `narration`, `prologue`, `followup_actions`) select chat profiles. Player memory independently selects extraction and embedding profiles. `credits` defines welcome points and points per RMB; each model's `rate` defines provider tariffs, cached input prices, multiplier, and pricing version. The included prices and capabilities are sample snapshots, not live verified tariffs or capability guarantees.
+
+<details>
+<summary>Model override example, merge rules, and access checks</summary>
 
 For a complete model override, save the following as `config/custom.local.json`. It uses the same sample provider/model as the defaults; replace the endpoint, model, capabilities, and rates with values appropriate for your service:
 
@@ -138,6 +205,8 @@ To check configured model access explicitly:
 
 This command makes real provider requests and may incur charges. Omit `--task` to check all configured routes. `--help` is offline; the checker does not require database or player memory resources, including with `--profile online`.
 
+</details>
+
 ## Deployment example
 
 The API Docker build uses uv 0.11.25, matching CI, to export the `agents,portal,online,observability,player-memory` runtime graph from `uv.lock`. It downloads hash checked dependencies and installs them and both project wheels with dependency resolution disabled. The final stage copies the installed environment; Git, source, the wheelhouse and test dependencies stay in the build stage. The runtime lock does not constrain the PEP 517 build environments' `setuptools>=77`; image tags and OS packages also remain unpinned, so builds are not claimed to be byte identical.
@@ -187,7 +256,11 @@ deploy/ecs/             Docker Compose deployment resources
 
 Offline functional tests do not establish live narrative quality, the effectiveness of character information constraints, or production recovery guarantees. Live models, PostgreSQL, and deployment environments require separate validation. A single API worker is currently recommended; settlement snapshots support completed-turn recovery, but there is no complete journal of individual model calls or guaranteed recovery across processes or multiple workers. Context selection is also constrained by the available window budget.
 
-Future work may explore context provenance, selection reasons and budget reports, long-session memory strategies, narrative quality and cost comparisons, and additional failure recovery cases. These are future directions, not claims of implemented capabilities.
+Ordinary scene generation uses an estimated complete request budget: the effective window is the minimum of the saved preference, routed `single_turn` model window and runtime window. `single_turn` `generation.max_tokens` reserves output (4096 when omitted), with a 256-token safety margin. Configuration and save edits reject an output reserve that cannot fit. Persisted preferences above a reduced deployment ceiling are clamped on read without changing SQL rows. The supported AgentScope adapter sends the cap as `max_completion_tokens` and checks the expanded SDK request before HTTP. Other generators and whole-campaign spending are outside this budget.
+
+Developers can inspect the actual factory-built engine with `engine.project_context(TurnInput(game_id, text, turn_id, package.version))`. This synchronous read-only method returns a detached request and a serializable `projection.report.to_dict()` with provenance IDs, selection/trimming reasons, component estimates, and estimator/policy identifiers. Use the existing explicit player preference scope when needed. Reports contain metadata rather than source text and remain developer-side; player HTTP/SSE responses receive a fixed safe error on required-material overflow. Estimates use a conservative heuristic rather than a provider tokenizer measurement. Mandatory overflow prevents that scene's model call and world writes; prior campaign work may already have committed.
+
+Future work may explore long-session memory strategies, narrative quality and cost comparisons, and additional failure recovery cases.
 
 ## License
 
