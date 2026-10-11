@@ -130,6 +130,8 @@ class ObservabilityTests(unittest.IsolatedAsyncioTestCase):
                 'replies': [{'actor_id': 'dockhand', 'speech': '今天有船靠岸。'}],
             })
             session = TurnEngine(store, package, model, telemetry=LangfuseTelemetry(client))
+            projection = session.project_context(TurnInput("game", "hello", "one", package.version))
+            report = projection.report
             result = await session.run_turn(TurnInput("game", "hello", "one", package.version))
             names = [value["name"] for kind, value in client.calls if kind == "start"]
             self.assertIn("single-call-turn", names)
@@ -140,12 +142,35 @@ class ObservabilityTests(unittest.IsolatedAsyncioTestCase):
                              ["harbor-opening-cue"])
             scores = {value["name"]: value["value"]
                       for kind, value in client.calls if kind == "score"}
-            self.assertEqual(scores, {
+            self.assertEqual({name: scores[name] for name in (
+                "story.single_scene_model_calls",
+                "story.turn_model_calls",
+                "story.work_processed",
+                "story.work_remaining",
+            )}, {
                 "story.single_scene_model_calls": 1.0,
                 "story.turn_model_calls": 1.0,
                 "story.work_processed": float(len(result.processed_work_ids)),
                 "story.work_remaining": float(len(store.pending_work("game"))),
             })
+            context_scores = {
+                "story.context.estimated_system_tokens": float(report.system_tokens),
+                "story.context.estimated_material_tokens": float(report.material_tokens),
+                "story.context.estimated_schema_tokens": float(report.schema_tokens),
+                "story.context.estimated_transport_tokens": float(report.transport_tokens),
+                "story.context.estimated_output_tokens": float(report.output_tokens),
+                "story.context.estimated_safety_margin_tokens": float(report.safety_margin_tokens),
+                "story.context.estimated_total_tokens": float(report.total_tokens),
+                "story.context.estimated_remaining_tokens": float(report.remaining_tokens),
+                "story.context.selected_items": float(sum(item.selected for item in report.decisions)),
+                "story.context.omitted_items": float(sum(not item.selected for item in report.decisions)),
+                "story.context.truncated_items": float(sum(item.truncated for item in report.decisions)),
+            }
+            self.assertTrue(all(name in scores for name in context_scores))
+            self.assertEqual({name: scores[name] for name in context_scores}, context_scores)
+            self.assertTrue(all(isinstance(value, float) for value in scores.values()))
+            self.assertNotIn("hello", repr(client.calls))
+            self.assertNotIn("今天有船靠岸", repr(client.calls))
             before = store.load("game")
             def fail(request):
                 raise ValueError("scene unavailable")
