@@ -47,7 +47,7 @@ flowchart TB
     Platform -.-> Trace["可选 Langfuse：追踪"]
 ```
 
-平台负责鉴权、内容生命周期、模型配置与路由、持久化、计费和部署；Harness 负责叙事运行契约、上下文投影、事件执行及 AgentScope 模型传输适配。当前依赖范围为 `storyloop-harness>=0.2,<0.3`，`pyproject.toml` 与 `uv.lock` 固定源码提交 `ad0cd6fbe02267a7d26fff36944166551056a8b0`。`scripts/build_harness.py` 从该提交构建 wheel；下方安装命令显式使用这个产物。
+平台负责鉴权、内容生命周期、模型配置与路由、持久化、计费和部署；Harness 负责叙事运行契约、上下文投影、事件执行及 AgentScope 模型传输适配。当前依赖范围为 `storyloop-harness>=0.2,<0.3`，`pyproject.toml` 与 `uv.lock` 固定源码提交 `951e3578ec512acb0fa681c5a8d4cc196e5ba342`。`scripts/build_harness.py` 从该提交构建 wheel；下方安装命令显式使用这个产物。
 
 <details>
 <summary>服务装配与关闭生命周期</summary>

@@ -47,7 +47,7 @@ flowchart TB
     Platform -.-> Trace["Optional Langfuse: tracing"]
 ```
 
-The platform owns authentication, content lifecycle, model settings and routing, persistence, billing, and deployment; Harness owns the narrative execution contract, context projection, event execution, and AgentScope model transport adapters. The dependency range is `storyloop-harness>=0.2,<0.3`, with source revision `ad0cd6fbe02267a7d26fff36944166551056a8b0` pinned in `pyproject.toml` and `uv.lock`. `scripts/build_harness.py` builds a wheel from that revision, and the installation below names that artifact explicitly.
+The platform owns authentication, content lifecycle, model settings and routing, persistence, billing, and deployment; Harness owns the narrative execution contract, context projection, event execution, and AgentScope model transport adapters. The dependency range is `storyloop-harness>=0.2,<0.3`, with source revision `951e3578ec512acb0fa681c5a8d4cc196e5ba342` pinned in `pyproject.toml` and `uv.lock`. `scripts/build_harness.py` builds a wheel from that revision, and the installation below names that artifact explicitly.
 
 <details>
 <summary>Service composition and shutdown lifecycle</summary>
