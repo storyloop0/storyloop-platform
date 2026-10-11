@@ -25,7 +25,7 @@ React / Vite → FastAPI 平台 → StoryLoop Harness
               SQL 存档与账务
 ```
 
-平台负责鉴权、内容生命周期、模型适配、持久化、计费和部署；harness 负责可复用的叙事运行契约。当前依赖范围为 `storyloop-harness>=0.2,<0.3`，`pyproject.toml` 与 `uv.lock` 固定源码提交 `94b0c749dad7811dc765431f20f77eb50dc6f049`。`scripts/build_harness.py` 从该提交构建 wheel；下方安装命令显式使用这个产物。
+平台负责鉴权、内容生命周期、模型适配、持久化、计费和部署；harness 负责可复用的叙事运行契约。当前依赖范围为 `storyloop-harness>=0.2,<0.3`，`pyproject.toml` 与 `uv.lock` 固定源码提交 `ad0cd6fbe02267a7d26fff36944166551056a8b0`。`scripts/build_harness.py` 从该提交构建 wheel；下方安装命令显式使用这个产物。
 
 `bootstrap.build_portal` 围绕同一个 SQL Engine 组装生产资源并负责关闭。`PlayerPortal` 完成请求鉴权后，把存档生命周期与查询交给 `GameplayService`，把回合执行与恢复交给 `TurnExecutionService`。两个服务共享内容访问、玩家操作锁与 `GameplayRuntime`；测试通过 `runtime_factory_builder` 注入离线运行时或模型实现。
 
@@ -187,7 +187,11 @@ deploy/ecs/             Docker Compose 部署资源
 
 离线功能测试不证明真实模型叙事质量、角色信息约束效果或生产环境的恢复能力；真实模型、PostgreSQL 和部署环境需单独验证。当前建议使用单个 API worker；结算快照支持已完成回合的恢复，但尚无完整的逐模型调用日志，也不保证跨进程或多 worker 恢复。当前上下文选择也会受窗口预算影响。
 
-后续可探索上下文来源、选择原因与预算明细，长局记忆策略，叙事质量与成本对照，以及更多故障恢复案例。这些是未来方向，尚不作为已有能力承诺。
+普通场景生成使用完整请求的估算预算：有效窗口取存档偏好、`single_turn` 路由模型窗口与运行时窗口的最小值。该模型的 `generation.max_tokens` 预留输出（未设置时为 4096），并保留 256 token 安全余量。配置与存档设置更新会拒绝无法容纳输出预留的窗口；部署上限降低后，存档偏好在读取时收紧，不改写 SQL 行。支持的 AgentScope 适配器以 `max_completion_tokens` 发送输出上限，并在 HTTP 前检查 SDK 展开后的请求。其他生成器和整场战役费用不属于此预算范围。
+
+开发者可对实际工厂构建的引擎调用 `engine.project_context(TurnInput(game_id, text, turn_id, package.version))`。此同步只读方法返回独立请求及可序列化的 `projection.report.to_dict()`，包含来源 ID、选择与裁剪原因、分项估算和估算器/策略标识；需要玩家偏好时使用现有显式偏好作用域。报告仅包含元数据，不包含来源正文，仅用于开发者检查；必需材料溢出时，玩家 HTTP/SSE 接口只返回固定安全错误。token 数是保守启发式估算，不是供应商 tokenizer 测量。必需材料溢出会阻止该场景的模型调用及世界写入；更早的战役工作可能已经提交。
+
+后续可探索长局记忆策略，叙事质量与成本对照，以及更多故障恢复案例。
 
 ## 许可证
 

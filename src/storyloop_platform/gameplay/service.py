@@ -190,6 +190,7 @@ class GameplayService:
                 raise ValueError(f"context window must be between 8192 and {max_window} tokens")
             previous = self.factory.generation_settings(game_id)
             settings = SaveGenerationSettings(float(temperature), context_window_tokens)
+            self.factory.context_budget(settings)
             self.generation_settings.put(game_id, settings, previous)
             self.factory.invalidate(game_id)
         return self.get_save_settings(player_id, game_id)

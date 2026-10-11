@@ -13,6 +13,12 @@ def test_platform_imports_only_public_harness_modules():
 
 
 @pytest.mark.parametrize('source', [
+    'import storyloop_harness.context.projection',
+    'from storyloop_harness.context import types as hidden',
+    'from storyloop_harness import context as c; c.types.ContextBudget',
+    'import storyloop_harness as h; h.context.contracts.ContextBudget',
+    'from importlib import import_module; import_module("storyloop_harness.context.budget")',
+    'from unittest.mock import patch; patch("storyloop_harness.context.selection.Selection.fit")',
     'import storyloop_harness.runtime.single_call',
     'from storyloop_harness.agents.scene_turn import SingleSceneGenerator',
     'from storyloop_harness import core as hidden',
@@ -68,6 +74,11 @@ def test_guard_rejects_private_testing_imports_and_keyword_targets(source, targe
 ])
 def test_guard_allows_public_seams_and_scanner_fixture_strings(source):
     assert not harness_import_violations(source)
+
+
+def test_guard_allows_public_context_surface():
+    assert not harness_import_violations('from storyloop_harness.context import ContextBudget, ContextProjection, ProjectionReport, ContextBudgetExceeded')
+    assert not harness_import_violations('from unittest.mock import patch; patch("storyloop_harness.TurnEngine.project_context")')
 
 
 def test_boundary_includes_non_test_helper_files(tmp_path):
