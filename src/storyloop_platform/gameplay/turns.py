@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import nullcontext
-import logging
 import re
 from uuid import uuid4
 
 from storyloop_harness import GameStore, ScenarioPackage, TurnInput
-from storyloop_harness.advanced import Observation, segment_for_observation, TurnProgress, emit, StoryClock, player_preferences_scope
+from storyloop_harness.advanced import segment_for_observation, TurnProgress, emit, StoryClock, player_preferences_scope
 from storyloop_harness.generation import ActionOption
 from storyloop_harness.telemetry import Telemetry, session_id_for_game
 
 from storyloop_platform.gameplay.access import GameAccess, require_supported_save
-from storyloop_platform.gameplay.factory import GameplayRuntime, TurnExecutor
+from storyloop_platform.gameplay.factory import GameplayRuntime
 from storyloop_platform.gameplay.locks import PlayerTurnLocks
 from storyloop_platform.gameplay.presentation import package_for_mode, turn_view
 from storyloop_platform.memory.service import PlayerMemoryService
@@ -26,7 +25,6 @@ from storyloop_platform.portal.sql_repository import SQLPlayerRepository
 from storyloop_platform.portal.turn_errors import TurnInputError, TurnRecoveryRequired
 from storyloop_platform.portal.turn_settlements import SQLTurnSettlements, TurnSettlement
 from storyloop_platform.runtime.guidance import GuidanceAdvisor, GuidanceResult
-from storyloop_platform.runtime.status_update import settle_status
 
 
 class TurnExecutionService:
@@ -103,25 +101,13 @@ class TurnExecutionService:
             if recovered is not None:
                 view = recovered
             elif mode == "campaign" and not source_driven:
-                review_status = any(field.automatically_updated for field in package.status_fields)
-                visible_before = ({item.observation_id
-                                   for item in self.store.observations_for(game_id, "player")}
-                                  if review_status else set())
                 program, session = self.factory.campaign(item, package, game_id)
                 single = session.turn_engine
                 outcome = await session.submit(game_id, text, turn_id, progress=progress)
                 engine_usage = outcome.model_usage
-                visible_after = (tuple(
-                    item for item in self.store.observations_for(game_id, "player")
-                    if item.observation_id not in visible_before
-                    or item.event_id.startswith(f"{turn_id}:")
-                ) if review_status else ())
                 await emit(progress, "preview", body=outcome.text,
                            segments=[part.to_dict() for part in outcome.segments])
-                if review_status:
-                    await emit(progress, "stage", stage="status")
-                snapshot = await self._settle_status(package, game_id, turn_id, text,
-                                                     visible_after, single)
+                snapshot = self.store.load(game_id)
                 await emit(progress, "stage", stage="guidance")
                 guidance = await GuidanceAdvisor(self.store, package, program,
                                                  telemetry=self.telemetry,
@@ -153,10 +139,6 @@ class TurnExecutionService:
                 body, segments = outcome.narration, outcome.segments
                 await emit(progress, "preview", body=body,
                            segments=[part.to_dict() for part in segments])
-                if any(field.automatically_updated for field in package.status_fields):
-                    await emit(progress, "stage", stage="status")
-                    await self._settle_status(package, game_id, turn_id, text,
-                                              outcome.player_observations, single)
                 await emit(progress, "stage", stage="guidance")
                 guidance = (GuidanceResult((), "source_story") if source_driven else
                             await GuidanceAdvisor(self.store, package, telemetry=self.telemetry).advise(
@@ -218,8 +200,6 @@ class TurnExecutionService:
                    if observation.event_id.startswith(f"{turn_id}:")]
         segments = tuple(segment_for_observation(self.store, game_id, item) for item in visible)
         body = "\n\n".join(item.body_text for item in segments) or "上次操作已提交，暂时没有新的可见变化。"
-        await self._settle_status(package, game_id, turn_id, text, tuple(visible), turn_engine)
-        snapshot = self.store.load(game_id)
         guidance = (GuidanceResult((), "source_story") if package.story_blueprint else
                     await GuidanceAdvisor(self.store, package, telemetry=self.telemetry).advise(
                         game_id, snapshot, visible_text=body))
@@ -233,22 +213,3 @@ class TurnExecutionService:
                           presentation_mode=package.presentation_mode,
                           action_options=action_options, clock=clock,
                           status_fields=package.status_fields, time_unit=package.time_unit)
-
-    async def _settle_status(self, package: ScenarioPackage, game_id: str, turn_id: str,
-                             player_text: str,
-                             observations: tuple[Observation, ...],
-                             single: TurnExecutor | None = None):
-        if not any(field.automatically_updated for field in package.status_fields):
-            return self.store.load(game_id)
-        if single is None:
-            propose = self.factory.status_adjudicator(game_id).propose
-        else:
-            async def propose(_snapshot, _text, _evidence, _fields):
-                return single.proposed_status(game_id, turn_id)
-        try:
-            return await settle_status(self.store, game_id, turn_id, player_text,
-                                       package.status_fields, observations,
-                                       propose)
-        except Exception:
-            logging.getLogger(__name__).exception("status review failed for game %s", game_id)
-            return self.store.load(game_id)

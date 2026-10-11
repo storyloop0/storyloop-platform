@@ -47,7 +47,7 @@ flowchart TB
     Platform -.-> Trace["可选 Langfuse：追踪"]
 ```
 
-平台负责鉴权、内容生命周期、模型配置与路由、持久化、计费和部署；Harness 负责叙事运行契约、上下文投影、事件执行及 AgentScope 模型传输适配。当前依赖范围为 `storyloop-harness>=0.2,<0.3`，`pyproject.toml` 与 `uv.lock` 固定源码提交 `951e3578ec512acb0fa681c5a8d4cc196e5ba342`。`scripts/build_harness.py` 从该提交构建 wheel；下方安装命令显式使用这个产物。
+平台负责鉴权、内容生命周期、模型配置与路由、持久化、计费和部署；Harness 负责叙事运行契约、上下文投影、事件执行及 AgentScope 模型传输适配。当前依赖范围为 `storyloop-harness>=0.2,<0.3`，`pyproject.toml` 与 `uv.lock` 固定源码提交 `7d799c4157dff257d3def8408e8a0a2bda492f9c`。`scripts/build_harness.py` 从该提交构建 wheel；下方安装命令显式使用这个产物。
 
 <details>
 <summary>服务装配与关闭生命周期</summary>
@@ -140,7 +140,7 @@ macOS/Linux 用 `python3.12 -m venv .venv` 创建环境，将 Python 路径替�
 
 `default_settings("local")` 和 `default_settings("online")` 加载包内共享模型配置及对应部署配置；`load_settings(path)` 应用外部 JSON 覆盖，省略 `environment` 表示本地。`config/local.json` 与 `config/online.json` 只包含存储、HTTP 和玩家记忆的少量部署差异，不复制模型目录。`examples/catalog.json` 的 `freeform` 和 `scheduled` 剧本包路径相对于该目录文件所在目录。
 
-供应商定义端点和凭据环境变量引用；模型配置引用供应商，定义模型名称、生成参数、上下文窗口、超时重试、接口适配选项和价格快照；任务路由（`single_turn`、`adjudication`、`narration`、`prologue`、`followup_actions`）选择聊天模型配置。玩家记忆分别选择提炼与向量模型配置。`credits` 定义赠送积分和每人民币对应积分，模型的 `rate` 定义供应商价格、缓存输入价格、倍率与价格版本。内置价格和能力是示例快照，未经实时验证，不构成当前价格或能力保证。
+供应商定义端点和凭据环境变量引用；模型配置引用供应商，定义模型名称、生成参数、上下文窗口、超时重试、接口适配选项和价格快照；任务路由（`single_turn`、`narration`、`prologue`、`followup_actions`）选择聊天模型配置。玩家记忆分别选择提炼与向量模型配置。`credits` 定义赠送积分和每人民币对应积分，模型的 `rate` 定义供应商价格、缓存输入价格、倍率与价格版本。内置价格和能力是示例快照，未经实时验证，不构成当前价格或能力保证。
 
 <details>
 <summary>模型覆盖示例、合并规则与访问检查</summary>
@@ -178,7 +178,6 @@ macOS/Linux 用 `python3.12 -m venv .venv` 创建环境，将 Python 路径替�
   },
   "routes": {
     "single_turn": "story",
-    "adjudication": "story",
     "narration": "story",
     "prologue": "story",
     "followup_actions": "story"

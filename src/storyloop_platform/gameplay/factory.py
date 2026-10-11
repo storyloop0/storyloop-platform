@@ -16,7 +16,6 @@ from storyloop_platform.gameplay.access import require_supported_save
 from storyloop_platform.generators.novel_narrator import NovelTurnNarrator
 from storyloop_platform.generators.scene_messages import SingleCallMessageWriter
 from storyloop_platform.generators.scene_narrator import CampaignSceneNarrator
-from storyloop_platform.generators.status_adjudicator import ModelStatusAdjudicator
 from storyloop_platform.portal.catalog import GameListing
 from storyloop_platform.portal.save_generation_settings import SaveGenerationSettings, SQLSaveGenerationSettings
 from storyloop_platform.portal.sql_repository import SQLPlayerRepository
@@ -32,7 +31,6 @@ class TurnExecutor(Protocol):
     async def run_ready_work(self, game_id: str, progress: TurnProgress | None = None) -> RunResult: ...
     def proposed_options(self, game_id: str, turn_id: str,
                          authored: tuple[ActionOption, ...] = ()) -> tuple[ActionOption, ...]: ...
-    def proposed_status(self, game_id: str, turn_id: str) -> list[dict[str, object]]: ...
 
 
 class GameplayRuntime(Protocol):
@@ -47,7 +45,6 @@ class GameplayRuntime(Protocol):
     def campaign(self, item: GameListing, package: ScenarioPackage,
                  game_id: str) -> tuple[CampaignProgram, CampaignSession]: ...
     def novel_presenter(self, package: ScenarioPackage, game_id: str) -> NovelTurnNarrator: ...
-    def status_adjudicator(self, game_id: str) -> ModelStatusAdjudicator: ...
 
 
 class RuntimeFactoryBuilder(Protocol):
@@ -188,8 +185,3 @@ class RuntimeFactory:
             for key in tuple(cache):
                 if key[1] == game_id:
                     del cache[key]
-
-    def status_adjudicator(self, game_id: str) -> ModelStatusAdjudicator:
-        model = self.models.create_model("adjudication",
-                                        temperature=self.generation_settings(game_id).temperature)
-        return ModelStatusAdjudicator(model, self.telemetry)

@@ -51,9 +51,6 @@ class OfflineExecutor:
     def proposed_options(self, game_id, turn_id, authored=()):
         return authored
 
-    def proposed_status(self, game_id, turn_id):
-        return []
-
     async def run_ready_work(self, game_id, progress=None):
         return RunResult((), (), self.store.load(game_id))
 
