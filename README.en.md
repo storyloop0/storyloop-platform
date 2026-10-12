@@ -123,6 +123,8 @@ sequenceDiagram
 
 Long-session context selects recent and relevant experiences from committed history while retaining original events; the current worldbook retrieves JSON entries.
 
+SQL storage supports Harness character checkpoint provenance and scenario validation. Upgrading clears old summary caches that have no verifiable sources while preserving events, observations, and world state. The platform does not yet configure an extra summarization model call; automatic compression needs explicit integration and quality and cost checks.
+
 The diagram shows a successful ordinary scene and budget rejection, omitting validation failures, retries, and other story work. World commits and credit settlement are separate steps; there is no claim of atomic whole-campaign commits. NPC contexts represent identity, experience, and information perspectives, with no independent ReAct instance per NPC. The shared model sees multiple character contexts, so these projections do not provide hard information isolation. One ordinary scene generation does not mean openings, action suggestions, or an entire campaign make only one model call.
 
 </details>
