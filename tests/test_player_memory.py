@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from storyloop_platform.config import load_settings, ModelFactory, PlatformResources
 from storyloop_platform.portal.http_api import create_app
@@ -92,5 +93,49 @@ def test_mem0_embedded_store_is_persistent_and_user_scoped_without_model_calls(t
         assert len(reopened.list_memories("player-a")) == 1
         reopened.clear("player-a")
         assert reopened.list_memories("player-a") == []
+    finally:
+        reopened.close()
+
+
+def test_mem0_single_record_controls_keep_player_scope_and_persist(tmp_path: Path) -> None:
+    factory = ModelFactory(load_settings(ROOT / "config/online.json"), env={"STORY_MODEL_API_KEY": "offline-key"})
+    location = tmp_path / "memory"
+    memory = Mem0PlayerMemory(factory, location)
+    try:
+        memory._memory.embedding_model.embed = lambda _text, _action=None: [0.1] * 1024
+        memory._memory.add("player A prefers fast pacing", user_id="player-a", infer=False,
+                           metadata={"source": "story_turn_batch"})
+        memory._memory.add("player B prefers mysteries", user_id="player-b", infer=False,
+                           metadata={"source": "story_turn_batch"})
+        first = memory.list_memories("player-a")[0]
+        other = memory.list_memories("player-b")[0]
+
+        with pytest.raises(KeyError, match="memory not found"):
+            memory.correct("player-a", other["id"], "wrong owner")
+        with pytest.raises(KeyError, match="memory not found"):
+            memory.delete_one("player-a", other["id"])
+        with pytest.raises(KeyError, match="memory not found"):
+            memory.correct("player-a", "missing-id", "not present")
+        assert memory.list_memories("player-b")[0]["text"] == other["text"]
+
+        memory.correct("player-a", first["id"], "玩家偏好慢节奏")
+        corrected = memory.list_memories("player-a")[0]
+        assert corrected["id"] == first["id"]
+        assert corrected["text"] == "玩家偏好慢节奏"
+        assert corrected["created_at"] == first["created_at"]
+        assert corrected["updated_at"]
+        assert corrected["source"] == "user_correction"
+    finally:
+        memory.close()
+
+    reopened = Mem0PlayerMemory(factory, location)
+    try:
+        saved = reopened.list_memories("player-a")[0]
+        assert saved["text"] == "玩家偏好慢节奏"
+        assert saved["source"] == "user_correction"
+        assert reopened.list_memories("player-b")[0]["text"] == other["text"]
+        reopened.delete_one("player-a", saved["id"])
+        assert reopened.list_memories("player-a") == []
+        assert reopened.list_memories("player-b")[0]["text"] == other["text"]
     finally:
         reopened.close()

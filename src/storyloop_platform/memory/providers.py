@@ -23,6 +23,8 @@ PROFILE_EXTRACTION_RULES = (
 class PlayerMemory(Protocol):
     def list_memories(self, player_id: str) -> list[dict[str, str]]: ...
     def remember(self, player_id: str, inputs: tuple[str, ...]) -> None: ...
+    def correct(self, player_id: str, memory_id: str, text: str) -> None: ...
+    def delete_one(self, player_id: str, memory_id: str) -> None: ...
     def clear(self, player_id: str) -> None: ...
     def close(self) -> None: ...
 
@@ -75,10 +77,27 @@ class Mem0PlayerMemory:
         raw = result.get("results", []) if isinstance(result, dict) else result
         rows = [
             {"id": str(item["id"]), "text": str(item["memory"]),
-             "created_at": str(item.get("created_at") or "")}
+             "created_at": str(item.get("created_at") or ""),
+             "updated_at": str(item.get("updated_at") or ""),
+             "source": str(item.get("source") or (item.get("metadata") or {}).get("source") or "")}
             for item in raw if isinstance(item, dict) and item.get("id") and item.get("memory")
         ]
         return sorted(rows, key=lambda item: item["created_at"], reverse=True)
+
+    def _require_owned(self, player_id: str, memory_id: str) -> None:
+        record = self._memory.get(memory_id)
+        if not isinstance(record, dict) or record.get("user_id") != player_id:
+            raise KeyError("memory not found")
+
+    def correct(self, player_id: str, memory_id: str, text: str) -> None:
+        with self._lock:
+            self._require_owned(player_id, memory_id)
+            self._memory.update(memory_id, text=text, metadata={"source": "user_correction"})
+
+    def delete_one(self, player_id: str, memory_id: str) -> None:
+        with self._lock:
+            self._require_owned(player_id, memory_id)
+            self._memory.delete(memory_id)
 
     def remember(self, player_id: str, inputs: tuple[str, ...]) -> None:
         messages = [{"role": "user", "content": value[:2000]} for value in inputs]
