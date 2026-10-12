@@ -178,7 +178,12 @@ class ObservabilityTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "scene unavailable"):
                 await session.run_turn(TurnInput("game", "again", "two", package.version))
             self.assertEqual(store.load("game"), before)
-            self.assertTrue(any(kind == "exit" and value is ValueError for kind, value in client.calls))
+            self.assertTrue(any(kind == "update" and value.get("level") == "ERROR"
+                                and value.get("status_message") == "ValueError"
+                                for kind, value in client.calls))
+            self.assertFalse(any(kind == "exit" and value is ValueError
+                                 for kind, value in client.calls))
+            self.assertNotIn("scene unavailable", repr(client.calls))
 
     async def test_model_generation_reports_model_usage_and_omits_content_by_default(self):
         client = FakeLangfuse()
