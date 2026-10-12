@@ -257,6 +257,8 @@ Player wire contracts are owned by `src/storyloop_platform/api/contracts.py`. Fr
 
 For browser regressions, from `web` run `npx playwright install chromium` and `npm run test:e2e`; these use a mock API. CI checks the backend with Python 3.12 on Windows/Linux and the frontend and browser flows with Node.js 24 on Linux. The `offline-test` value is not a live model credential.
 
+To check the local player path through the real web app, FastAPI, and SQLite, install the Python and Node dependencies above, then run `cd web; npm run test:integration`. It builds the frontend, starts local services on ports `5173` and `8765`, and uses a deterministic offline model to cover registration, save creation, an action, API process restart, login, and continuing the same save. Both ports must be free. The temporary database is removed afterward. Windows uses installed Edge; other systems use Playwright Chromium. Set `STORYLOOP_TEST_PYTHON` if Python is neither in the repository `.venv` nor on `PATH`. This check does not call a live provider or assess generated story quality or deployment.
+
 ```text
 src/storyloop_platform/  API, SQL, configuration, model adapters, billing, CLI
 web/                    React / Vite frontend

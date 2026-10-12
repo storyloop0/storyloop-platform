@@ -16,6 +16,7 @@ web/dist/
 web/*.tsbuildinfo
 web/test-results/
 web/playwright-report/
+/.player-smoke-*/
 deploy/ecs/private/
 /docs/
 *.md

@@ -81,6 +81,10 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npm run test:e2e
+      - name: Local player acceptance
+        if: runner.os == 'Linux'
+        working-directory: web
+        run: npm run test:integration
       - uses: actions/upload-artifact@v4
         if: failure() && runner.os == 'Linux'
         with:

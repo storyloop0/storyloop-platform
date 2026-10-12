@@ -257,6 +257,8 @@ cd ..
 
 浏览器回归另在 `web` 运行 `npx playwright install chromium` 与 `npm run test:e2e`，使用模拟 API。CI 在 Windows/Linux 使用 Python 3.12 验证后端，并在 Linux 使用 Node.js 24 验证前端与浏览器。测试中的 `offline-test` 不是可用于真实游玩的密钥。
 
+从真实网页到 FastAPI/SQLite 的本地玩家验收，在完成上述 Python 与 Node 依赖安装后运行 `cd web; npm run test:integration`。它构建前端，在本机 `5173`/`8765` 端口启动独立服务，以确定性离线模型完成注册、建档、行动、API 进程重启后登录与续玩；数据库使用测试临时目录并在结束后清理。端口需空闲，Windows 使用已安装的 Edge，其他系统使用 Playwright Chromium；如 Python 不在仓库 `.venv` 或 `PATH`，用 `STORYLOOP_TEST_PYTHON` 指定解释器。此验收不调用真实供应商，也不评价生成质量或线上部署。
+
 ```text
 src/storyloop_platform/  API、SQL、配置、模型适配、计费和 CLI
 web/                    React / Vite 前端

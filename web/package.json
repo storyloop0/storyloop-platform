@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:e2e": "playwright test",
+    "test:integration": "playwright test --config playwright.integration.config.ts",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "format": "prettier --write src",
