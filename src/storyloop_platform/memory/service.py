@@ -23,6 +23,7 @@ class PlayerMemoryService:
         self.telemetry = telemetry
         self._profile_cache: dict[str, tuple[str, ...]] = {}
         self._profile_epochs: dict[str, int] = {}
+        self._collection_epochs: dict[str, int] = {}
         self._memory_access = asyncio.Lock()
         self._memory_wakeup = asyncio.Event()
 
@@ -54,6 +55,7 @@ class PlayerMemoryService:
         async with self._memory_access:
             self.jobs.set_enabled(player_id, enabled)
             self._invalidate_profile(player_id)
+            self._invalidate_collection(player_id)
         return await self.status(player_id)
 
     async def clear(self, player_id: str) -> dict:
@@ -61,6 +63,7 @@ class PlayerMemoryService:
             raise ValueError("玩家画像当前不可用")
         async with self._memory_access:
             self._invalidate_profile(player_id)
+            self._invalidate_collection(player_id)
             self.jobs.clear(player_id)
             try:
                 await self.operations.run_blocking(lambda: self.provider.clear(player_id), name="memory-clear")
@@ -70,9 +73,48 @@ class PlayerMemoryService:
                 self._invalidate_profile(player_id)
         return await self.status(player_id)
 
+    async def correct(self, player_id: str, memory_id: str, text: str) -> dict:
+        if self.provider is None:
+            raise ValueError("玩家画像当前不可用")
+        corrected = text.strip()
+        if not 1 <= len(corrected) <= 180:
+            raise ValueError("偏好内容须为 1 到 180 个字符")
+        async with self._memory_access:
+            self._invalidate_profile(player_id)
+            try:
+                await self.operations.run_blocking(
+                    lambda: self.provider.correct(player_id, memory_id, corrected),
+                    name="memory-correct")
+                self._invalidate_collection(player_id)
+                self.jobs.clear(player_id)
+            finally:
+                self._invalidate_profile(player_id)
+        return await self.status(player_id)
+
+    async def delete_one(self, player_id: str, memory_id: str) -> dict:
+        if self.provider is None:
+            raise ValueError("玩家画像当前不可用")
+        async with self._memory_access:
+            self._invalidate_profile(player_id)
+            try:
+                await self.operations.run_blocking(
+                    lambda: self.provider.delete_one(player_id, memory_id),
+                    name="memory-delete-one")
+                self._invalidate_collection(player_id)
+                self.jobs.clear(player_id)
+            finally:
+                self._invalidate_profile(player_id)
+        return await self.status(player_id)
+
     def _invalidate_profile(self, player_id: str) -> None:
         self._profile_epochs[player_id] = self._profile_epochs.get(player_id, 0) + 1
         self._profile_cache.pop(player_id, None)
+
+    def _invalidate_collection(self, player_id: str) -> None:
+        self._collection_epochs[player_id] = self.collection_epoch(player_id) + 1
+
+    def collection_epoch(self, player_id: str) -> int:
+        return self._collection_epochs.get(player_id, 0)
 
     async def preferences_for(self, player_id: str) -> tuple[str, ...]:
         if not self.enabled or self.provider is None or not self.jobs.enabled(player_id):
@@ -94,8 +136,11 @@ class PlayerMemoryService:
             return ()
 
     def queue_input(self, player_id: str, game_id: str,
-                    request_id: str, player_text: str) -> None:
+                    request_id: str, player_text: str,
+                    *, expected_epoch: int | None = None) -> None:
         if not self.enabled or self.provider is None:
+            return
+        if expected_epoch is not None and expected_epoch != self.collection_epoch(player_id):
             return
         if player_text == "/continue" or player_text in {"/next", "/rest"} or player_text.startswith("/choose "):
             return

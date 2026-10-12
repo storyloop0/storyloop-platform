@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { Pencil, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import { api, type PlayerMemoryStatus } from "../lib/api";
 import { Loading, Notice } from "../components/Feedback";
 
@@ -9,6 +9,9 @@ export function PlayerMemoryPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -37,6 +40,30 @@ export function PlayerMemoryPage() {
     finally { setBusy(false); }
   }
 
+  async function changeOne(action: () => Promise<PlayerMemoryStatus>, failure: string) {
+    setBusy(true);
+    setError("");
+    try {
+      setStatus(await action());
+    } catch {
+      try {
+        setStatus(await api.playerMemory());
+        setError(failure);
+      } catch {
+        setError("操作未能完成，画像状态也暂时无法刷新，请手动刷新。");
+      }
+    } finally {
+      setEditingId(null);
+      setConfirmDeleteId(null);
+      setBusy(false);
+    }
+  }
+
+  function dateLabel(value: string) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("zh-CN");
+  }
+
   return (
     <main className="page-container player-memory-page">
       <div className="page-title">
@@ -58,7 +85,7 @@ export function PlayerMemoryPage() {
             </div>
             <div className="memory-explainer">
               <p>开启后，系统从你的有效行动中提炼节奏、文风与互动习惯。每累计 {status.batch_size} 条有效输入，且距离上次提炼至少 {status.min_interval_hours} 小时，才会启动一次后台提炼。</p>
-              <p><strong>费用说明：</strong>提炼会产生百炼 API 费用；内测期间由平台承担，不扣你的积分。关闭后不再采集新输入，已生成画像会保留，直到你清空。</p>
+              <p><strong>费用说明：</strong>提炼会产生百炼 API 费用；内测期间由平台承担，不扣你的积分。关闭后不再采集新输入，已生成偏好会保留，直到你纠正、删除或清空。</p>
             </div>
             <div className="memory-control-row">
               <div>
@@ -88,9 +115,57 @@ export function PlayerMemoryPage() {
               </div>
               {status.memories.length ? (
                 <ul className="memory-list">
-                  {status.memories.map((item) => <li key={item.id}>{item.text}</li>)}
+                  {status.memories.map((item) => <li key={item.id}>
+                    {editingId === item.id ? (
+                      <form className="memory-edit" onSubmit={(event) => {
+                        event.preventDefault();
+                        if (draft.trim().length > 0 && draft.trim().length <= 180) {
+                          void changeOne(() => api.correctPlayerMemory(item.id, draft.trim()), "纠正未能完成，已重新读取当前画像，请重试。");
+                        }
+                      }}>
+                        <label htmlFor={`memory-edit-${item.id}`}>偏好内容</label>
+                        <textarea id={`memory-edit-${item.id}`} value={draft} maxLength={180}
+                          disabled={busy} onChange={(event) => setDraft(event.target.value)} />
+                        <div className="memory-edit-footer">
+                          <span>{draft.trim().length}/180 字</span>
+                          <div className="memory-row-actions">
+                            <button type="button" disabled={busy} onClick={() => setEditingId(null)}>取消</button>
+                            <button type="submit" disabled={busy || !draft.trim()}>保存纠正</button>
+                          </div>
+                        </div>
+                      </form>
+                    ) : (
+                      <>
+                        <p className="memory-row-text">{item.text}</p>
+                        <div className="memory-row-footer">
+                          <span className="memory-row-meta">
+                            {item.source === "user_correction" ? "你已纠正" : "故事提炼"}
+                            {dateLabel(item.updated_at || item.created_at) && ` · ${dateLabel(item.updated_at || item.created_at)}`}
+                          </span>
+                          {confirmDeleteId === item.id ? (
+                            <div className="memory-delete-confirm">
+                              <span>确定删除这条偏好？</span>
+                              <button type="button" disabled={busy} onClick={() => setConfirmDeleteId(null)}>取消</button>
+                              <button type="button" disabled={busy}
+                                onClick={() => void changeOne(() => api.deletePlayerMemory(item.id), "删除未能完成，已重新读取当前画像，请重试。")}>确认删除</button>
+                            </div>
+                          ) : (
+                            <div className="memory-row-actions">
+                              <button type="button" disabled={busy} onClick={() => {
+                                setEditingId(item.id); setDraft(item.text); setConfirmDeleteId(null);
+                              }}><Pencil size={14} /> 纠正偏好</button>
+                              <button type="button" disabled={busy} onClick={() => setConfirmDeleteId(item.id)}>
+                                <Trash2 size={14} /> 删除偏好
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </li>)}
                 </ul>
               ) : <p className="memory-empty">还没有提炼出偏好。游玩一段时间后可以回来看看。</p>}
+              {status.memories.length > 0 && <p className="memory-edit-note">纠正或删除一条偏好时，这次尚未提炼的游玩输入也会清除。</p>}
               {(status.memories.length > 0 || status.queued_inputs > 0) && (
                 <button type="button" className="memory-clear" disabled={busy} onClick={clear}>
                   <Trash2 size={15} /> 清空画像和待提炼输入

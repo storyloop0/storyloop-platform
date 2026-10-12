@@ -72,6 +72,10 @@ class PlayerMemorySettingsBody(BaseModel):
     enabled: bool
 
 
+class PlayerMemoryCorrectionBody(BaseModel):
+    text: str
+
+
 class ReviewDecisionBody(BaseModel):
     decision: str
     reason: str = ""
@@ -160,7 +164,7 @@ def create_app(portal: PlayerPortal, *, operation_shutdown_timeout: float = GRAC
     bearer = HTTPBearer(auto_error=False)
     if portal.settings.environment == "online":
         app.add_middleware(CORSMiddleware, allow_origins=list(portal.resources.allowed_origins()),
-                           allow_methods=["GET", "POST", "PUT", "DELETE"],
+                           allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
                            allow_headers=["Authorization", "Content-Type"])
 
     @app.middleware("http")
@@ -181,6 +185,8 @@ def create_app(portal: PlayerPortal, *, operation_shutdown_timeout: float = GRAC
             return JSONResponse({"error": "Origin required"}, status_code=403)
         needs_json = (request.url.path in {"/v1/accounts", "/v1/sessions", "/v1/saves",
                                                "/v1/me/memory/settings", "/v1/manage/invites"}
+                      or (request.method == "PATCH"
+                          and request.url.path.startswith("/v1/me/memory/"))
                       or (request.url.path.startswith("/v1/manage/")
                           and request.url.path.endswith(("/decision", "/role", "/status", "/state")))
                       or request.url.path.endswith("/settings")
@@ -316,6 +322,23 @@ def create_app(portal: PlayerPortal, *, operation_shutdown_timeout: float = GRAC
             return await operations.run(
                 lambda: portal.clear_memory(auth), name="clear-memory")
         except ValueError as error:
+            raise _http_error(error) from error
+
+    @app.patch("/v1/me/memory/{memory_id}")
+    async def correct_player_memory(memory_id: str, body: PlayerMemoryCorrectionBody,
+                                    auth: str = Depends(token)) -> dict:
+        try:
+            return await operations.run(
+                lambda: portal.correct_memory(auth, memory_id, body.text), name="correct-memory")
+        except (KeyError, ValueError) as error:
+            raise _http_error(error) from error
+
+    @app.delete("/v1/me/memory/{memory_id}")
+    async def delete_player_memory(memory_id: str, auth: str = Depends(token)) -> dict:
+        try:
+            return await operations.run(
+                lambda: portal.delete_memory(auth, memory_id), name="delete-memory")
+        except (KeyError, ValueError) as error:
             raise _http_error(error) from error
 
     @app.get("/v1/my-scenarios")

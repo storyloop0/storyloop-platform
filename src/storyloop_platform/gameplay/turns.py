@@ -70,9 +70,11 @@ class TurnExecutionService:
         cached = self.accounts.get_turn_response(game_id, request_id, text)
         if cached is not None:
             return cached
+        memory_epoch = self.memory_service.collection_epoch(player_id)
         prepared = self.settlements.get(game_id, request_id, text)
         if prepared is not None:
-            return self._settle_prepared_turn(player_id, game_id, request_id, text, item, prepared)
+            return self._settle_prepared_turn(player_id, game_id, request_id, text, item,
+                                              prepared, memory_epoch)
         turn_id = f"portal-{request_id}"
         progress_state = self.store.load(game_id).data.get("story_progress", {})
         committed_same_turn = any(self.store.event_exists(game_id, f"{turn_id}:{kind}")
@@ -155,14 +157,17 @@ class TurnExecutionService:
         if self.billing is not None and not preview:
             prepared = self.settlements.prepare(game_id, request_id, text, view,
                                                      list(engine_usage) + meter.records, self.billing.policy)
-            return self._settle_prepared_turn(player_id, game_id, request_id, text, item, prepared)
+            return self._settle_prepared_turn(player_id, game_id, request_id, text, item,
+                                              prepared, memory_epoch)
         self.accounts.store_turn_response(game_id, request_id, text, view)
         if not preview:
-            self.memory_service.queue_input(player_id, game_id, request_id, text)
+            self.memory_service.queue_input(player_id, game_id, request_id, text,
+                                            expected_epoch=memory_epoch)
         return view
 
     def _settle_prepared_turn(self, player_id: str, game_id: str, request_id: str,
-                              player_text: str, item: GameListing, prepared: TurnSettlement) -> dict:
+                              player_text: str, item: GameListing, prepared: TurnSettlement,
+                              memory_epoch: int) -> dict:
         billing = self.billing or self.billing_for_policy(prepared.policy)
         with self.telemetry.span(
             "billing-settlement",
@@ -175,7 +180,8 @@ class TurnExecutionService:
             span.metric("story.credits_charged", billed["billing"]["charged_milli_points"] / 1000)
             span.metric("story.input_tokens", float(billed["billing"]["input_tokens"]))
             span.metric("story.output_tokens", float(billed["billing"]["output_tokens"]))
-            self.memory_service.queue_input(player_id, game_id, request_id, player_text)
+            self.memory_service.queue_input(player_id, game_id, request_id, player_text,
+                                            expected_epoch=memory_epoch)
             return billed
 
     async def _recover_freeform(self, item: GameListing, package: ScenarioPackage,

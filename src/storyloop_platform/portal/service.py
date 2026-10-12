@@ -63,6 +63,12 @@ class PlayerPortal:
     async def clear_memory(self, token: str) -> dict:
         return await self.memory_service.clear(self.accounts.resolve_token(token))
 
+    async def correct_memory(self, token: str, memory_id: str, text: str) -> dict:
+        return await self.memory_service.correct(self.accounts.resolve_token(token), memory_id, text)
+
+    async def delete_memory(self, token: str, memory_id: str) -> dict:
+        return await self.memory_service.delete_one(self.accounts.resolve_token(token), memory_id)
+
     def register(self, username: str, password: str, invite_code: str | None = None) -> dict:
         player_id = self.accounts.register(username, password, invite_code,
                                            require_invite=self.settings.environment == "online")
