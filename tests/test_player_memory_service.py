@@ -498,3 +498,19 @@ def test_inflight_read_cannot_restore_pre_correction_profile():
         assert await service.preferences_for("player") == ("new preference",)
         service.close()
     asyncio.run(run())
+
+
+def test_background_extraction_does_not_discard_new_turn_input():
+    async def run():
+        memory, jobs = FakeMemory(), FakeJobs()
+        jobs.set_enabled("player", True)
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        started_epoch = service.collection_epoch("player")
+        batch = MemoryBatch("player", (("game", "old", "long enough prior input"),))
+        jobs.batches.append(batch)
+        assert await service._run_batch() == batch
+        service.queue_input("player", "game", "new", "fresh long enough input",
+                            expected_epoch=started_epoch)
+        assert jobs.pending_count("player") == 1
+        service.close()
+    asyncio.run(run())
