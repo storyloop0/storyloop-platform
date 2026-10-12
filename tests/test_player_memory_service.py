@@ -33,6 +33,20 @@ class FakeMemory:
     def clear(self, player_id):
         self.rows.pop(player_id, None)
 
+    def correct(self, player_id, memory_id, text):
+        for row in self.rows.get(player_id, []):
+            if row.get("id") == memory_id:
+                row["text"] = text
+                row["source"] = "user_correction"
+                return
+        raise KeyError("memory not found")
+
+    def delete_one(self, player_id, memory_id):
+        rows = self.rows.get(player_id, [])
+        if not any(row.get("id") == memory_id for row in rows):
+            raise KeyError("memory not found")
+        self.rows[player_id] = [row for row in rows if row.get("id") != memory_id]
+
     def close(self):
         self.closed = True
 
@@ -414,5 +428,73 @@ def test_read_started_during_clear_cannot_repopulate_after_clear_settles():
                 old_result = await read
         assert old_result == ()
         assert await service.preferences_for("player") == ()
+        service.close()
+    asyncio.run(run())
+
+
+def test_single_record_controls_scope_queue_and_cache():
+    async def run():
+        memory, jobs = FakeMemory(), FakeJobs()
+        jobs.set_enabled("first", True)
+        jobs.set_enabled("second", True)
+        memory.rows["first"] = [{"id": "a", "text": "old preference"}]
+        memory.rows["second"] = [{"id": "b", "text": "other preference"}]
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        assert await service.preferences_for("first") == ("old preference",)
+        jobs.enqueue("first", "g", "a1", "old preference")
+        jobs.enqueue("second", "g", "b1", "other preference")
+
+        with pytest.raises(KeyError, match="memory not found"):
+            await service.correct("first", "b", "wrong owner")
+        with pytest.raises(KeyError, match="memory not found"):
+            await service.delete_one("first", "missing")
+        assert jobs.pending_count("first") == jobs.pending_count("second") == 1
+        assert memory.rows["second"][0]["text"] == "other preference"
+        for invalid in (" ", "x" * 181):
+            with pytest.raises(ValueError):
+                await service.correct("first", "a", invalid)
+        assert jobs.pending_count("first") == 1
+
+        updated = await service.correct("first", "a", "  corrected preference  ")
+        assert updated["memories"][0]["text"] == "corrected preference"
+        assert updated["memories"][0]["source"] == "user_correction"
+        assert updated["queued_inputs"] == 0
+        assert jobs.pending_count("second") == 1
+        assert await service.preferences_for("first") == ("corrected preference",)
+
+        service.enabled = False
+        deleted = await service.delete_one("first", "a")
+        assert deleted["memories"] == []
+        assert memory.rows["second"][0]["text"] == "other preference"
+        assert jobs.pending_count("second") == 1
+        service.close()
+    asyncio.run(run())
+
+
+def test_inflight_read_cannot_restore_pre_correction_profile():
+    async def run():
+        memory, jobs = FakeMemory(), FakeJobs()
+        jobs.set_enabled("player", True)
+        memory.rows["player"] = [{"id": "a", "text": "old preference"}]
+        captured, release = threading.Event(), threading.Event()
+        original_list = memory.list_memories
+
+        def held_snapshot(player_id):
+            rows = [dict(row) for row in original_list(player_id)]
+            if not captured.is_set():
+                captured.set()
+                assert release.wait(5)
+            return rows
+
+        memory.list_memories = held_snapshot
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        read = asyncio.create_task(service.preferences_for("player"))
+        try:
+            assert await asyncio.to_thread(captured.wait, 5)
+            assert (await service.correct("player", "a", "new preference"))["memories"][0]["text"] == "new preference"
+        finally:
+            release.set()
+            assert await read == ()
+        assert await service.preferences_for("player") == ("new preference",)
         service.close()
     asyncio.run(run())

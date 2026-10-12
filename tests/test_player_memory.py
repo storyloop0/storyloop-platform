@@ -31,6 +31,20 @@ class FakePlayerMemory:
     def clear(self, player_id: str) -> None:
         self.rows.pop(player_id, None)
 
+    def correct(self, player_id: str, memory_id: str, text: str) -> None:
+        for row in self.rows.get(player_id, []):
+            if row["id"] == memory_id:
+                row["text"] = text
+                row["source"] = "user_correction"
+                return
+        raise KeyError("memory not found")
+
+    def delete_one(self, player_id: str, memory_id: str) -> None:
+        rows = self.rows.get(player_id, [])
+        if not any(row["id"] == memory_id for row in rows):
+            raise KeyError("memory not found")
+        self.rows[player_id] = [row for row in rows if row["id"] != memory_id]
+
     def close(self) -> None:
         pass
 
@@ -139,3 +153,48 @@ def test_mem0_single_record_controls_keep_player_scope_and_persist(tmp_path: Pat
         assert reopened.list_memories("player-b")[0]["text"] == other["text"]
     finally:
         reopened.close()
+
+
+def test_player_memory_http_single_record_controls_are_authenticated_and_scoped(tmp_path: Path) -> None:
+    portal = build_portal(ROOT / "examples/catalog.json", load_settings(ROOT / "config/local.json"),
+                          str(tmp_path / "game.sqlite3"))
+    fake = FakePlayerMemory()
+    portal.memory_service.provider = fake
+    portal.memory_service.enabled = True
+    with TestClient(create_app(portal), base_url="http://127.0.0.1") as client:
+        first = client.post("/v1/accounts", json={"username": "memory-first",
+                                                   "password": "password-123"}).json()
+        second = client.post("/v1/accounts", json={"username": "memory-second",
+                                                    "password": "password-123"}).json()
+        client.cookies.clear()
+        auth = {"Authorization": f"Bearer {first['token']}"}
+        other = {"Authorization": f"Bearer {second['token']}"}
+        fake.rows[first["player_id"]] = [{"id": "own", "text": "old", "created_at": ""}]
+        fake.rows[second["player_id"]] = [{"id": "foreign", "text": "other", "created_at": ""}]
+        jobs = portal.memory_service.jobs
+        jobs.set_enabled(first["player_id"], True)
+        jobs.set_enabled(second["player_id"], True)
+        assert jobs.enqueue(first["player_id"], "g", "a1", "old preference input")
+        assert jobs.enqueue(second["player_id"], "g", "b1", "other preference input")
+
+        assert client.patch("/v1/me/memory/own", json={"text": "changed"}).status_code == 401
+        foreign = client.patch("/v1/me/memory/foreign", json={"text": "wrong"}, headers=auth)
+        missing = client.patch("/v1/me/memory/missing", json={"text": "wrong"}, headers=auth)
+        assert foreign.status_code == missing.status_code == 404
+        assert foreign.json() == missing.json()
+        assert client.delete("/v1/me/memory/foreign", headers=auth).status_code == 404
+        assert jobs.pending_count(first["player_id"]) == jobs.pending_count(second["player_id"]) == 1
+        assert client.patch("/v1/me/memory/own", json={"text": "   "}, headers=auth).status_code in {400, 422}
+        assert client.patch("/v1/me/memory/own", json={"text": "x" * 181}, headers=auth).status_code in {400, 422}
+        assert jobs.pending_count(first["player_id"]) == 1
+
+        corrected = client.patch("/v1/me/memory/own", json={"text": "  new preference  "}, headers=auth)
+        assert corrected.status_code == 200
+        assert corrected.json()["memories"][0]["text"] == "new preference"
+        assert corrected.json()["memories"][0]["source"] == "user_correction"
+        assert corrected.json()["queued_inputs"] == 0
+        assert jobs.pending_count(second["player_id"]) == 1
+        portal.memory_service.enabled = False
+        deleted = client.delete("/v1/me/memory/own", headers=auth)
+        assert deleted.status_code == 200 and deleted.json()["memories"] == []
+        assert client.get("/v1/me/memory", headers=other).json()["memories"][0]["text"] == "other"

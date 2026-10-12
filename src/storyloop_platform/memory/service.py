@@ -70,6 +70,37 @@ class PlayerMemoryService:
                 self._invalidate_profile(player_id)
         return await self.status(player_id)
 
+    async def correct(self, player_id: str, memory_id: str, text: str) -> dict:
+        if self.provider is None:
+            raise ValueError("玩家画像当前不可用")
+        corrected = text.strip()
+        if not 1 <= len(corrected) <= 180:
+            raise ValueError("偏好内容须为 1 到 180 个字符")
+        async with self._memory_access:
+            self._invalidate_profile(player_id)
+            try:
+                await self.operations.run_blocking(
+                    lambda: self.provider.correct(player_id, memory_id, corrected),
+                    name="memory-correct")
+                self.jobs.clear(player_id)
+            finally:
+                self._invalidate_profile(player_id)
+        return await self.status(player_id)
+
+    async def delete_one(self, player_id: str, memory_id: str) -> dict:
+        if self.provider is None:
+            raise ValueError("玩家画像当前不可用")
+        async with self._memory_access:
+            self._invalidate_profile(player_id)
+            try:
+                await self.operations.run_blocking(
+                    lambda: self.provider.delete_one(player_id, memory_id),
+                    name="memory-delete-one")
+                self.jobs.clear(player_id)
+            finally:
+                self._invalidate_profile(player_id)
+        return await self.status(player_id)
+
     def _invalidate_profile(self, player_id: str) -> None:
         self._profile_epochs[player_id] = self._profile_epochs.get(player_id, 0) + 1
         self._profile_cache.pop(player_id, None)
