@@ -134,7 +134,7 @@ The diagram shows a successful ordinary scene and budget rejection, omitting val
 
 `default_settings("local")` and `default_settings("online")` load shared packaged model defaults plus a deployment profile. `load_settings(path)` applies an external JSON override; omitted `environment` means local. `config/local.json` and `config/online.json` are small storage, HTTP, and player memory overrides, rather than duplicated model catalogs. `examples/catalog.json` references scenario packages `freeform` and `scheduled` relative to the catalog directory.
 
-Providers define endpoints and credential environment references. Model profiles reference a provider and own the model name, generation options, context window, timeout/retry policy, compatibility options, and tariff snapshot. Task routes (`single_turn`, `adjudication`, `narration`, `prologue`, `followup_actions`) select chat profiles. Player memory independently selects extraction and embedding profiles. `credits` defines welcome points and points per RMB; each model's `rate` defines provider tariffs, cached input prices, multiplier, and pricing version. The included prices and capabilities are sample snapshots, not live verified tariffs or capability guarantees.
+Providers define endpoints and credential environment references. Model profiles reference a provider and own the model name, generation options, context window, timeout/retry policy, compatibility options, and tariff snapshot. Task routes (`single_turn`, `narration`, `prologue`, `followup_actions`) select chat profiles. Player memory independently selects extraction and embedding profiles. `credits` defines welcome points and points per RMB; each model's `rate` defines provider tariffs, cached input prices, multiplier, and pricing version. The included prices and capabilities are sample snapshots, not live verified tariffs or capability guarantees.
 
 For a complete model override, save the following as `config/custom.local.json`. It uses the same sample provider/model as the defaults; replace the endpoint, model, capabilities, and rates with values appropriate for your service:
 
@@ -169,7 +169,6 @@ For a complete model override, save the following as `config/custom.local.json`.
   },
   "routes": {
     "single_turn": "story",
-    "adjudication": "story",
     "narration": "story",
     "prologue": "story",
     "followup_actions": "story"
@@ -186,7 +185,7 @@ Validate and launch it with:
 
 `providers`, `models`, and `routes` replace their entire maps; include every entry and route you need. Fixed sections (`runtime`, `http`, `player_memory`, `credits`) merge one level. Storage merges when its driver is unchanged and replaces when the driver changes. External relative SQLite paths resolve from the settings file's directory unless `storage.path_base` is `cwd`; packaged defaults use the working directory. Credentials belong in the referenced environment variables, never settings JSON.
 
-New saves take their default temperature from `single_turn` (1.0 when unset). Save related scene, narration, adjudication, and followup generation use the saved temperature override, including after a settings update; each profile's temperature applies when no save override is passed. Standalone prologue generation uses its own profile.
+New saves take their default temperature from `single_turn` (1.0 when unset). Save related scene, narration, and followup generation use the saved temperature override, including after a settings update; each profile's temperature applies when no save override is passed. Standalone prologue generation uses its own profile.
 
 To check configured model access explicitly:
 

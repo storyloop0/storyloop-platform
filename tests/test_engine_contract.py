@@ -1,11 +1,10 @@
-"""Platform status settlement consumes validated public engine proposals once."""
+"""Platform consumes narrative status committed by the public engine once."""
 import asyncio
 from dataclasses import replace
 import pytest
 
 from storyloop_harness import ScenarioPackage, TurnEngine, TurnInput
 from storyloop_platform.adapters.store import SQLiteGameStore
-from storyloop_platform.runtime.status_update import settle_status
 from runtime_fakes import StructuredOfflineModel
 from scenario_fixtures import EXAMPLE, status_package
 
@@ -36,13 +35,10 @@ def test_plain_status_change_is_validated_before_prose_commit_and_applied_once(w
             assert store.load('status').version == before.version
             assert not store.event_exists('status', 'turn:input')
             return
-        outcome = await engine.run_turn(request)
-        async def propose(*_):
-            return engine.proposed_status('status', 'turn')
-        first = await settle_status(store, 'status', 'turn', '我有些紧张', package.status_fields,
-                                     outcome.player_observations, propose)
-        again = await settle_status(store, 'status', 'turn', '我有些紧张', package.status_fields,
-                                     outcome.player_observations, propose)
+        first = (await engine.run_turn(request)).snapshot
+        again = (await TurnEngine(store, package, model).run_turn(request)).snapshot
         assert first.data['player_stats']['pressure'] == 4
         assert again.version == first.version
+        assert len(model.requests) == 1
+        assert not store.event_exists('status', 'turn:status')
     asyncio.run(run())

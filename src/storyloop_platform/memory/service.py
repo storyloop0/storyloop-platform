@@ -22,6 +22,7 @@ class PlayerMemoryService:
         self.enabled = enabled
         self.telemetry = telemetry
         self._profile_cache: dict[str, tuple[str, ...]] = {}
+        self._profile_epochs: dict[str, int] = {}
         self._memory_access = asyncio.Lock()
         self._memory_wakeup = asyncio.Event()
 
@@ -52,27 +53,40 @@ class PlayerMemoryService:
             raise ValueError("玩家画像尚未由平台开放")
         async with self._memory_access:
             self.jobs.set_enabled(player_id, enabled)
-            self._profile_cache.pop(player_id, None)
+            self._invalidate_profile(player_id)
         return await self.status(player_id)
 
     async def clear(self, player_id: str) -> dict:
         if self.provider is None:
             raise ValueError("玩家画像当前不可用")
         async with self._memory_access:
+            self._invalidate_profile(player_id)
             self.jobs.clear(player_id)
-            await self.operations.run_blocking(lambda: self.provider.clear(player_id), name="memory-clear")
-            self._profile_cache.pop(player_id, None)
+            try:
+                await self.operations.run_blocking(lambda: self.provider.clear(player_id), name="memory-clear")
+            finally:
+                # Blocking work settles before cancellation propagates. Invalidate
+                # reads started during the clear even if cleanup failed afterward.
+                self._invalidate_profile(player_id)
         return await self.status(player_id)
+
+    def _invalidate_profile(self, player_id: str) -> None:
+        self._profile_epochs[player_id] = self._profile_epochs.get(player_id, 0) + 1
+        self._profile_cache.pop(player_id, None)
 
     async def preferences_for(self, player_id: str) -> tuple[str, ...]:
         if not self.enabled or self.provider is None or not self.jobs.enabled(player_id):
             return ()
         if player_id in self._profile_cache:
             return self._profile_cache[player_id]
+        epoch = self._profile_epochs.get(player_id, 0)
         try:
             rows = await self.operations.run_blocking(
                 lambda: self.provider.list_memories(player_id), name="memory-list")
             result = tuple(row["text"][:180] for row in rows[:8])
+            if (epoch != self._profile_epochs.get(player_id, 0)
+                    or not self.enabled or not self.jobs.enabled(player_id)):
+                return ()
             self._profile_cache[player_id] = result
             return result
         except Exception:
@@ -136,6 +150,9 @@ class PlayerMemoryService:
                     await self.operations.run_blocking(lambda: self.jobs.fail(batch), name="memory-fail")
                 else:
                     await self.operations.run_blocking(lambda: self.jobs.complete(batch), name="memory-complete")
-                    self._profile_cache.pop(batch.player_id, None)
                     span.metric("story.player_memory_batch_success", 1.0)
+                finally:
+                    # Extraction may partially persist before raising, and job
+                    # settlement can fail after a successful provider write.
+                    self._invalidate_profile(batch.player_id)
             return batch

@@ -23,7 +23,7 @@ PositiveInt = Annotated[int, Field(gt=0)]
 Seconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 Amount = Annotated[Decimal, Field(ge=0, allow_inf_nan=False, strict=False)]
 Task = Literal[
-    "single_turn", "adjudication", "narration", "prologue", "followup_actions"
+    "single_turn", "narration", "prologue", "followup_actions"
 ]
 
 
