@@ -19,6 +19,22 @@
 .memory-refresh:hover, .memory-clear:hover { color: oklch(0.94 0.07 25); }
 .memory-list { list-style: none; padding: 0; margin: 16px 0 0; }
 .memory-list li { padding: 16px 3px; border-bottom: 1px solid oklch(0.29 0.02 18); line-height: 1.75; color: oklch(0.91 0.014 20); }
+.memory-row-text { margin: 0; overflow-wrap: anywhere; }
+.memory-row-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 18px; margin-top: 8px; }
+.memory-row-meta, .memory-edit-note, .memory-edit-footer > span { color: oklch(0.76 0.025 20); font-size: 0.79rem; }
+.memory-row-actions, .memory-delete-confirm { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; }
+.memory-row-actions button, .memory-delete-confirm button { display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: oklch(0.84 0.045 24); padding: 4px 2px; font-size: 0.83rem; cursor: pointer; }
+.memory-row-actions button:hover:not(:disabled), .memory-delete-confirm button:hover:not(:disabled) { color: oklch(0.98 0.02 20); }
+.memory-delete-confirm span { color: oklch(0.88 0.05 25); font-size: 0.83rem; }
+.memory-row-actions button:focus-visible, .memory-delete-confirm button:focus-visible, .memory-edit button:focus-visible { outline: 2px solid oklch(0.8 0.11 27); outline-offset: 3px; }
+.memory-row-actions button:disabled, .memory-delete-confirm button:disabled, .memory-edit button:disabled { opacity: 0.5; cursor: not-allowed; }
+.memory-edit { display: grid; gap: 8px; }
+.memory-edit label { font-size: 0.84rem; font-weight: 600; }
+.memory-edit textarea { width: 100%; min-height: 85px; resize: vertical; border: 1px solid oklch(0.45 0.035 20); border-radius: 9px; padding: 10px 12px; background: oklch(0.22 0.018 16); color: oklch(0.94 0.012 20); font: inherit; line-height: 1.5; }
+.memory-edit textarea:focus-visible { outline: 2px solid oklch(0.8 0.11 27); outline-offset: 2px; }
+.memory-edit-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.memory-edit-footer button[type="submit"] { border: 1px solid oklch(0.66 0.12 28); border-radius: 8px; padding: 6px 12px; background: oklch(0.42 0.09 25); color: white; }
+.memory-edit-note { margin: 16px 0 0; line-height: 1.6; }
 .memory-empty { color: oklch(0.74 0.025 20); font-size: 0.88rem; padding: 20px 0; }
 .memory-clear { margin-top: 20px; color: oklch(0.79 0.08 26); }
 @media (max-width: 700px) { .player-memory-page { padding-top: 40px; } .memory-settings { padding: 20px; } .memory-control-row { align-items: stretch; flex-direction: column; } .memory-toggle { width: 100%; } }

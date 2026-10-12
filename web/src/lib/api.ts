@@ -152,7 +152,7 @@ export type Session = { player_id: string; roles: string[]; capabilities: string
 export type PlayerMemoryStatus = {
   available: boolean;
   enabled: boolean;
-  memories: { id: string; text: string; created_at: string }[];
+  memories: { id: string; text: string; created_at: string; updated_at: string; source: string }[];
   queued_inputs: number;
   batch_size: number;
   min_interval_hours: number;
@@ -271,6 +271,10 @@ export const api = {
   setPlayerMemory: (enabled: boolean) =>
     request<PlayerMemoryStatus>("/v1/me/memory/settings", "POST", { enabled }),
   clearPlayerMemory: () => request<PlayerMemoryStatus>("/v1/me/memory", "DELETE"),
+  correctPlayerMemory: (id: string, text: string) =>
+    request<PlayerMemoryStatus>(`/v1/me/memory/${encodeURIComponent(id)}`, "PATCH", { text }),
+  deletePlayerMemory: (id: string) =>
+    request<PlayerMemoryStatus>(`/v1/me/memory/${encodeURIComponent(id)}`, "DELETE"),
   logout: () => request<{ status: string }>("/v1/sessions/current", "DELETE"),
   catalog: () => request<{ games: Game[] }>("/v1/catalog"),
   myScenarios: () => request<{ scenarios: UserScenario[] }>("/v1/my-scenarios"),
