@@ -14,7 +14,8 @@ from storyloop_harness.telemetry import Telemetry, TraceSpan, NoopSpan as _NoopS
 class _SafeContext:
     def __init__(self, client: object | None, name: str, metadata: dict[str, object],
                  kind: str = "span", input: object | None = None,
-                 model: str | None = None, session_id: str | None = None) -> None:
+                 model: str | None = None, session_id: str | None = None,
+                 capture_content: bool = False) -> None:
         self.client = client
         self.name = name
         self.metadata = metadata
@@ -22,8 +23,10 @@ class _SafeContext:
         self.input = input
         self.model = model
         self.session_id = session_id
+        self.capture_content = capture_content
         self._context: object | None = None
         self._attributes_context: object | None = None
+        self._span: _SafeSpan | None = None
 
     def __enter__(self) -> TraceSpan:
         if self.client is None:
@@ -42,9 +45,11 @@ class _SafeContext:
             if self.model is not None:
                 kwargs["model"] = self.model
             self._context = self.client.start_as_current_observation(**kwargs)
-            return _SafeSpan(self._context.__enter__())
+            self._span = _SafeSpan(self._context.__enter__())
+            return self._span
         except Exception:
             self._context = None
+            self._span = None
             if self._attributes_context is not None:
                 try:
                     self._attributes_context.__exit__(None, None, None)
@@ -54,16 +59,30 @@ class _SafeContext:
             return _NoopSpan()
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        exit_args = (exc_type, exc, traceback)
+        if exc_type is not None and not self.capture_content and self._context is not None:
+            # The SDK's context manager records the original exception in an OTel
+            # event and status. Mark the failure safely, then close it normally.
+            name = exc_type.__name__
+            if self._span is not None:
+                self._span.update(level="ERROR", status_message=name)
+            try:
+                from opentelemetry.trace import Status, StatusCode, get_current_span
+
+                get_current_span().set_status(Status(StatusCode.ERROR, name))
+            except Exception:
+                pass
+            exit_args = (None, None, None)
         try:
             if self._context is not None:
                 try:
-                    self._context.__exit__(exc_type, exc, traceback)
+                    self._context.__exit__(*exit_args)
                 except Exception:
                     pass
         finally:
             if self._attributes_context is not None:
                 try:
-                    self._attributes_context.__exit__(exc_type, exc, traceback)
+                    self._attributes_context.__exit__(*exit_args)
                 except Exception:
                     pass
         return False
@@ -94,7 +113,8 @@ class LangfuseTelemetry:
     def span(self, name: str, metadata: dict[str, object], *, kind: str = "span",
              input: object | None = None, model: str | None = None,
              session_id: str | None = None) -> _SafeContext:
-        return _SafeContext(self.client, name, metadata, kind, input, model, session_id)
+        return _SafeContext(self.client, name, metadata, kind, input, model, session_id,
+                            self.capture_content)
 
     def flush(self) -> None:
         if self.client is not None:

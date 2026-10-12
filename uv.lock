@@ -2637,6 +2637,7 @@ agents = [
 ]
 observability = [
     { name = "langfuse" },
+    { name = "opentelemetry-api" },
 ]
 online = [
     { name = "psycopg", extra = ["binary"] },
@@ -2664,6 +2665,7 @@ requires-dist = [
     { name = "langfuse", marker = "extra == 'observability'", specifier = ">=4.8.1,<5" },
     { name = "mcp", marker = "extra == 'agents'", specifier = "==1.30.0" },
     { name = "mem0ai", marker = "extra == 'player-memory'", specifier = "==2.2.1" },
+    { name = "opentelemetry-api", marker = "extra == 'observability'", specifier = ">=1.45,<2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'online'", specifier = ">=3.1,<4" },
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8,<10" },
