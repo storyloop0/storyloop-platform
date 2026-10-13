@@ -11,12 +11,49 @@ from fastapi.testclient import TestClient
 from storyloop_platform.portal.http_api import create_app
 from storyloop_platform.config import load_settings
 from storyloop_platform.bootstrap import build_portal
+from storyloop_platform.portal.turn_errors import turn_failure
+from storyloop_harness.generation import GenerationRequestLimitExceeded, GenerationTimeout
 from runtime_fakes import OfflineRuntimeFactory
 from committed_input import commit_player_input
 from test_scenario_lifecycle_concurrency import archive
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("error,code,message", [
+    (GenerationRequestLimitExceeded(), "GENERATION_REQUEST_LIMIT_EXCEEDED", "Structured generation request limit exceeded"),
+    (GenerationTimeout(), "GENERATION_TIMEOUT", "Structured generation timeout exceeded"),
+])
+def test_generation_control_failure_is_fixed_and_safe(error, code, message):
+    failure = turn_failure(error, "request-1", message="private-provider-sentinel")
+    assert failure == {"code": code, "message": message, "retryable": False,
+                       "commit_state": "unknown", "request_id": "request-1"}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("error_type,code", [
+    (GenerationRequestLimitExceeded, "GENERATION_REQUEST_LIMIT_EXCEEDED"),
+    (GenerationTimeout, "GENERATION_TIMEOUT"),
+])
+def test_generation_control_http_error_is_safe(portal, stream, error_type, code):
+    token = portal.register("reader", "password-123")["token"]
+
+    async def failed(*args, **kwargs):
+        raise error_type()
+
+    portal.turn = failed
+    with TestClient(create_app(portal), base_url="http://127.0.0.1") as client:
+        response = client.post("/v1/saves/game/turns" + ("/stream" if stream else ""),
+                               headers={"Authorization": f"Bearer {token}"},
+                               json={"text": "private-prompt-sentinel", "request_id": "budget"})
+        payload = ([json.loads(line[6:]) for line in response.text.splitlines()
+                    if line.startswith("data: ")][-1] if stream else response.json())
+    assert payload["code"] == code
+    assert payload["retryable"] is False
+    assert payload["commit_state"] == "unknown"
+    assert payload["request_id"] == "budget"
+    assert "private-" not in response.text
 
 
 @pytest.mark.parametrize('stream', [False, True])

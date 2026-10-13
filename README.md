@@ -155,6 +155,8 @@ SQL 存储已支持 Harness 的角色经历 checkpoint 来源与剧本校验；�
       "kind": "chat",
       "provider": "default",
       "model": "deepseek-v4.1-flash",
+      "generation_max_requests": 3,
+      "generation_timeout_seconds": 90,
       "generation": {"temperature": 0.7},
       "extra_body": {"enable_thinking": false},
       "tool_choice_policy": "auto_only",
@@ -188,6 +190,8 @@ SQL 存储已支持 Harness 的角色经历 checkpoint 来源与剧本校验；�
 `providers`、`models`、`routes` 整张映射替换，需包含所需的全部条目和路由。固定配置段（`runtime`、`http`、`player_memory`、`credits`）合并一层；存储驱动相同时合并，改变驱动时替换。外部配置中的相对 SQLite 路径基于配置文件目录解析，除非显式指定 `storage.path_base: "cwd"`；包内默认路径基于当前工作目录。密钥只放在引用的环境变量中，不写入配置 JSON。
 
 新存档从 `single_turn` 取得默认温度（未设置时为 1.0）。存档相关的场景、叙述、裁定和后续建议生成使用该存档保存的温度覆盖，包括更新设置后；没有传入存档覆盖时使用各模型配置自己的温度。独立开场生成使用自己的模型配置。
+
+每个聊天模型配置的结构化生成默认最多发送 3 次补全请求，总期限为 90 秒，覆盖重试与回退。可在对应配置中设置正数 `generation_max_requests` 和 `generation_timeout_seconds`。限制按每次结构化生成计算，不代表整轮限制；无结构化模型的普通调用维持原有行为。供应商 HTTP 的 `timeout_seconds` 与 `max_retries` 是独立配置。
 
 显式检查模型访问：
 

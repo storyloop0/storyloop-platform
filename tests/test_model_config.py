@@ -10,6 +10,7 @@ from storyloop_platform.config import load_settings, default_settings, ModelFact
 from storyloop_platform.adapters.store import SQLiteGameStore
 from storyloop_harness import TurnEngine, TurnInput
 from storyloop_harness import ScenarioPackage
+from storyloop_harness.generation import GenerationBudget
 
 
 class ModelFactoryTests(unittest.TestCase):
@@ -21,6 +22,7 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(model.client.timeout.connect, 10)
         self.assertEqual(model.client.timeout.read, 90)
         self.assertEqual(model.client.max_retries, 2)
+        self.assertEqual(model.generation_budget, GenerationBudget(max_requests=3, timeout_seconds=90))
 
 
 class ToolChoiceCompatibilityTests(unittest.IsolatedAsyncioTestCase):
