@@ -42,6 +42,34 @@ def test_running_then_terminal_freezes_pricing_and_replays_identically(repo):
         repo.finish("e", summary, outcome="failed", error_type="RuntimeError")
 
 
+def test_unfinished_running_row_survives_database_reopen_without_model_replay(tmp_path):
+    url = sqlite_url(str(tmp_path / "restarted.db"))
+    upgrade_database(url)
+    engine = open_database(url)
+    try:
+        SQLModelExecutionAudits(engine).start(
+            execution_id="abandoned", player_id="p", game_id="g", request_id="r",
+            input_hash="h", policy=policy(),
+        )
+    finally:
+        engine.dispose()
+
+    reopened = open_database(url)
+    try:
+        rows = SQLModelExecutionAudits(reopened).list_for_request("g", "r")
+        assert len(rows) == 1
+        assert rows[0]["execution_id"] == "abandoned"
+        assert rows[0]["outcome"] == "running"
+        assert rows[0]["attempts"] is None
+        assert rows[0]["summary"] is None
+        with reopened.connect() as db:
+            stored = db.execute(text("SELECT attempts_json, summary_json FROM model_execution_audits "
+                                     "WHERE execution_id='abandoned'")).one()
+        assert stored == (None, None)
+    finally:
+        reopened.dispose()
+
+
 def test_retry_rows_and_corrupt_read_are_explicit(repo):
     for execution in ("a", "b"):
         repo.start(execution_id=execution, player_id="p", game_id="g", request_id="r",

@@ -11,8 +11,8 @@ def policy():
     }, {})
 
 
-def attempt(ordinal, model="m", usage=None, state="reported", outcome="succeeded", complete=True):
-    return ModelAttempt("call", ordinal, model, "task", outcome, usage, state, complete,
+def attempt(ordinal, model="m", task="task", usage=None, state="reported", outcome="succeeded", complete=True):
+    return ModelAttempt("call", ordinal, model, task, outcome, usage, state, complete,
                         None if outcome == "succeeded" else "RuntimeError")
 
 
@@ -84,5 +84,25 @@ def test_cached_input_and_multiplier_are_aggregated_before_rounding():
     # Each attempt costs 270 milli-points; price the aggregate once.
     assert estimate_attempt_costs(summary, tariff) == {
         "known_cost_milli_points": 540, "total_cost_milli_points": 540,
+        "unpriced_models": [],
+    }
+
+
+def test_distinct_groups_round_only_after_combining_fractional_costs():
+    tariff = BillingPolicy.from_dict({
+        "welcome_points": 0, "points_per_rmb": 100, "pricing_version": "fractional",
+        "models": {
+            model: {"input_rmb_per_million": "1", "output_rmb_per_million": "1"}
+            for model in ("m", "n")
+        },
+    }, {})
+    summary = summarize_attempt_usage([
+        attempt(1, model="m", task="task-a", usage=ModelUsage("m", "task-a", 1, 0)),
+        attempt(2, model="n", task="task-b", usage=ModelUsage("n", "task-b", 1, 0)),
+    ])
+    assert len(summary.known_usage) == 2
+    assert [tariff.price_milli_points([usage]) for usage in summary.known_usage] == [1, 1]
+    assert estimate_attempt_costs(summary, tariff) == {
+        "known_cost_milli_points": 1, "total_cost_milli_points": 1,
         "unpriced_models": [],
     }

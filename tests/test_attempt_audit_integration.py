@@ -1,11 +1,12 @@
 import asyncio
+import json
 from dataclasses import replace
 
 import pytest
-from httpx2 import AsyncClient as HttpAsyncClient, MockTransport
+from httpx2 import AsyncByteStream, AsyncClient as HttpAsyncClient, MockTransport, Response
 from openai import AsyncClient as OpenAIAsyncClient
 
-from storyloop_harness.generation import GenerationRequestLimitExceeded
+from storyloop_harness.generation import GenerationRequestLimitExceeded, GenerationTimeout
 from storyloop_platform.config import ModelFactory, PlatformSettings, default_settings
 from storyloop_platform.gameplay.attempt_audit_scope import attempt_audit_scope
 from test_turn_failure_contract import portal
@@ -13,7 +14,7 @@ from test_generation_budget_integration import _completion
 from test_scenario_lifecycle_concurrency import archive
 
 
-def sdk_model(monkeypatch, responder, *, max_requests=None):
+def sdk_model(monkeypatch, responder, *, max_requests=None, timeout_seconds=None):
     transport = HttpAsyncClient(transport=MockTransport(responder))
     original_init = OpenAIAsyncClient.__init__
 
@@ -23,13 +24,42 @@ def sdk_model(monkeypatch, responder, *, max_requests=None):
 
     monkeypatch.setattr(OpenAIAsyncClient, "__init__", init)
     settings = default_settings()
-    if max_requests is not None:
+    if max_requests is not None or timeout_seconds is not None:
         raw = settings.model_dump(mode="json")
-        raw["models"]["story"]["generation_max_requests"] = max_requests
+        if max_requests is not None:
+            raw["models"]["story"]["generation_max_requests"] = max_requests
+        if timeout_seconds is not None:
+            raw["models"]["story"]["generation_timeout_seconds"] = timeout_seconds
         settings = PlatformSettings.model_validate(raw)
     model = ModelFactory(settings, env={"STORY_MODEL_API_KEY": "offline"}).create_model("single_turn")
     model.retry_delay = 0
     return model, transport
+
+
+def sse_usage(prompt_tokens, completion_tokens):
+    payload = {
+        "id": "offline", "created": 0, "model": "qwen3.8-flash",
+        "object": "chat.completion.chunk", "choices": [],
+        "usage": {"prompt_tokens": prompt_tokens,
+                  "completion_tokens": completion_tokens,
+                  "total_tokens": prompt_tokens + completion_tokens},
+    }
+    return f"data: {json.dumps(payload)}\n\n".encode()
+
+
+class BlockingUsageStream(AsyncByteStream):
+    def __init__(self, prompt_tokens, completion_tokens):
+        self.piece = sse_usage(prompt_tokens, completion_tokens)
+        self.waiting = asyncio.Event()
+        self.closed = False
+
+    async def __aiter__(self):
+        yield self.piece
+        self.waiting.set()
+        await asyncio.Event().wait()
+
+    async def aclose(self):
+        self.closed = True
 
 
 def test_portal_turn_writes_model_execution_before_settlement_and_cache_replay(portal, monkeypatch):
@@ -183,6 +213,94 @@ def test_portal_cancellation_preserves_cancelled_error_and_unknown_cost(portal, 
     asyncio.run(run())
     row = portal.turns.audits.list_for_request(game, "cancel")[0]
     assert row["outcome"] == "cancelled"
+    assert row["summary"]["total_cost_milli_points"] is None
+
+
+def test_portal_sdk_sse_cancel_after_report_persists_known_usage(portal, monkeypatch):
+    stream = BlockingUsageStream(1200, 600)
+    observed_errors = []
+
+    def reply(request):
+        return Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
+
+    model, transport = sdk_model(monkeypatch, reply)
+    model.stream = True
+    portal.gameplay.factory.offline_models.model = model
+    player = portal.register("sse-cancel-reader", "password-123")
+    game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
+
+    async def turn():
+        try:
+            await portal.turn(player["token"], game, "Hello", "sse-cancel")
+        except asyncio.CancelledError as error:
+            observed_errors.append(error)
+            raise
+
+    async def run():
+        task = asyncio.create_task(turn())
+        try:
+            await asyncio.wait_for(stream.waiting.wait(), timeout=10)
+            task.cancel("original-cancellation")
+            with pytest.raises(asyncio.CancelledError) as raised:
+                await task
+            return raised.value
+        finally:
+            await model.client.close()
+            await transport.aclose()
+
+    original = asyncio.run(run())
+    assert type(original) is asyncio.CancelledError
+    assert original is observed_errors[0]
+    assert original.args == ("original-cancellation",)
+    assert stream.closed
+    row = portal.turns.audits.list_for_request(game, "sse-cancel")[0]
+    assert row["outcome"] == "cancelled"
+    assert row["error_type"] == "CancelledError"
+    assert len(row["attempts"]) == 1
+    assert row["attempts"][0]["outcome"] == "cancelled"
+    assert row["attempts"][0]["usage_state"] == "reported"
+    assert row["attempts"][0]["stream_complete"] is False
+    assert row["summary"]["known_input_tokens"] == 1200
+    assert row["summary"]["known_output_tokens"] == 600
+    assert row["summary"]["known_cost_milli_points"] == 360
+    assert row["summary"]["total_cost_milli_points"] is None
+
+
+def test_portal_factory_deadline_keeps_earlier_reported_failure(portal, monkeypatch):
+    sends = []
+
+    async def reply(request):
+        sends.append(request)
+        if len(sends) == 1:
+            return _completion("{}", prompt_tokens=1000, completion_tokens=500)
+        await asyncio.Event().wait()
+
+    model, transport = sdk_model(monkeypatch, reply, timeout_seconds=0.3)
+    portal.gameplay.factory.offline_models.model = model
+    player = portal.register("deadline-audit-reader", "password-123")
+    game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
+
+    async def run():
+        try:
+            with pytest.raises(GenerationTimeout) as raised:
+                await asyncio.wait_for(portal.turn(player["token"], game, "Hello", "deadline"),
+                                       timeout=10)
+            return raised.value
+        finally:
+            await model.client.close()
+            await transport.aclose()
+
+    original = asyncio.run(run())
+    assert type(original) is GenerationTimeout
+    assert len(sends) >= 2
+    row = portal.turns.audits.list_for_request(game, "deadline")[0]
+    assert row["outcome"] == "failed"
+    assert row["error_type"] == "GenerationTimeout"
+    assert row["attempts"][0]["outcome"] == "failed"
+    assert row["attempts"][0]["usage_state"] == "reported"
+    assert row["summary"]["known_input_tokens"] == 1000
+    assert row["summary"]["known_output_tokens"] == 500
+    assert row["summary"]["known_cost_milli_points"] == 300
     assert row["summary"]["total_cost_milli_points"] is None
 
 
