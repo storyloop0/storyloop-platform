@@ -10,6 +10,7 @@ from storyloop_platform.config import ModelFactory, PlatformSettings, default_se
 from storyloop_platform.gameplay.attempt_audit_scope import attempt_audit_scope
 from test_turn_failure_contract import portal
 from test_generation_budget_integration import _completion
+from test_scenario_lifecycle_concurrency import archive
 
 
 def sdk_model(monkeypatch, responder, *, max_requests=None):
@@ -200,5 +201,141 @@ def test_audit_finish_write_fault_keeps_successful_receipt(portal, monkeypatch, 
     assert receipt["billing"]["input_tokens"] > 0
     assert "PRIVATE_AUDIT_SENTINEL" not in caplog.text
     assert repository.list_for_request(game, "audit-fault")[0]["outcome"] == "running"
+    asyncio.run(model.client.close())
+    asyncio.run(transport.aclose())
+
+
+def test_prepared_settlement_replay_has_no_new_audit_or_model_send(portal, monkeypatch):
+    sends = []
+
+    def reply(request):
+        sends.append(request)
+        return _completion('{"prose":"A quiet harbor."}', prompt_tokens=1000,
+                           completion_tokens=500)
+
+    model, transport = sdk_model(monkeypatch, reply)
+    portal.gameplay.factory.offline_models.model = model
+    player = portal.register("prepared-audit-reader", "password-123")
+    game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
+    billing = portal.billing
+    original_settle = billing.settle_turn
+
+    def fail_settlement(*args, **kwargs):
+        raise RuntimeError("settlement unavailable")
+
+    monkeypatch.setattr(billing, "settle_turn", fail_settlement)
+    with pytest.raises(RuntimeError, match="settlement unavailable"):
+        asyncio.run(portal.turn(player["token"], game, "Hello", "prepared-audit"))
+    before = portal.turns.audits.list_for_request(game, "prepared-audit")
+    assert len(before) == 1 and before[0]["outcome"] == "succeeded"
+    assert len(sends) == 1
+
+    monkeypatch.setattr(billing, "settle_turn", original_settle)
+    receipt = asyncio.run(portal.turn(player["token"], game, "Hello", "prepared-audit"))
+    assert receipt["billing"]["input_tokens"] == 1000
+    assert asyncio.run(portal.turn(player["token"], game, "Hello", "prepared-audit")) == receipt
+    assert portal.turns.audits.list_for_request(game, "prepared-audit") == before
+    assert len(sends) == 1
+    asyncio.run(model.client.close())
+    asyncio.run(transport.aclose())
+
+
+def test_concurrent_players_capture_only_their_own_model_attempt(portal, monkeypatch):
+    entered = 0
+    both_entered = asyncio.Event()
+    sends = []
+
+    async def reply(request):
+        nonlocal entered
+        sends.append(request)
+        entered += 1
+        if entered == 2:
+            both_entered.set()
+        await asyncio.wait_for(both_entered.wait(), timeout=10)
+        body = request.content.decode()
+        tokens = 101 if "Alpha signal" in body else 202
+        return _completion('{"prose":"A quiet harbor."}', prompt_tokens=tokens,
+                           completion_tokens=50)
+
+    model, transport = sdk_model(monkeypatch, reply)
+    portal.gameplay.factory.offline_models.model = model
+    alpha = portal.register("audit-alpha", "password-123")
+    beta = portal.register("audit-beta", "password-123")
+    game_a = asyncio.run(portal.create_save(alpha["token"], "npc-chat"))["game_id"]
+    game_b = asyncio.run(portal.create_save(beta["token"], "npc-chat"))["game_id"]
+
+    async def run():
+        await asyncio.gather(
+            portal.turn(alpha["token"], game_a, "Alpha signal", "concurrent-a"),
+            portal.turn(beta["token"], game_b, "Beta signal", "concurrent-b"),
+        )
+        await model.client.close()
+        await transport.aclose()
+
+    asyncio.run(run())
+    row_a = portal.turns.audits.list_for_request(game_a, "concurrent-a")
+    row_b = portal.turns.audits.list_for_request(game_b, "concurrent-b")
+    assert len(sends) == 2
+    assert len(row_a) == len(row_b) == 1
+    assert row_a[0]["player_id"] == alpha["player_id"]
+    assert row_b[0]["player_id"] == beta["player_id"]
+    assert row_a[0]["summary"]["known_input_tokens"] == 101
+    assert row_b[0]["summary"]["known_input_tokens"] == 202
+    assert len(row_a[0]["attempts"]) == len(row_b[0]["attempts"]) == 1
+
+
+def test_preview_is_unbilled_but_records_usage_with_unknown_cost(portal, monkeypatch):
+    sends = []
+
+    def reply(request):
+        sends.append(request)
+        return _completion('{"prose":"A quiet harbor."}', prompt_tokens=500,
+                           completion_tokens=200)
+
+    model, transport = sdk_model(monkeypatch, reply)
+    portal.gameplay.factory.offline_models.model = model
+    author = portal.register("preview-audit-author", "password-123")
+    reviewer = portal.register("preview-audit-reviewer", "password-123")
+    portal.access.bootstrap_admin("preview-audit-reviewer")
+    draft = asyncio.run(portal.upload_scenario(author["token"], "Preview", "", archive()))
+    submission = portal.submit_scenario(author["token"], draft["id"])
+    before_wallet = portal.wallet(reviewer["token"])
+    game = asyncio.run(portal.create_review_preview(reviewer["token"],
+                                                   submission["submission_id"]))["game_id"]
+    response = asyncio.run(portal.turn(reviewer["token"], game, "Hello", "preview-audit"))
+    rows = portal.turns.audits.list_for_request(game, "preview-audit")
+    assert "billing" not in response
+    assert portal.wallet(reviewer["token"]) == before_wallet
+    assert portal.turns.settlements.get(game, "preview-audit", "Hello") is None
+    assert len(rows) == 1 and rows[0]["outcome"] == "succeeded"
+    assert rows[0]["policy"] is None
+    assert rows[0]["summary"]["known_input_tokens"] == 500
+    assert rows[0]["summary"]["known_cost_milli_points"] is None
+    assert rows[0]["summary"]["total_cost_milli_points"] is None
+    assert len(sends) == 1
+    asyncio.run(model.client.close())
+    asyncio.run(transport.aclose())
+
+
+def test_unbilled_standard_turn_records_usage_without_estimated_cost(portal, monkeypatch):
+    model, transport = sdk_model(
+        monkeypatch,
+        lambda request: _completion('{"prose":"A quiet harbor."}',
+                                    prompt_tokens=700, completion_tokens=300),
+    )
+    portal.gameplay.factory.offline_models.model = model
+    player = portal.register("unbilled-audit-reader", "password-123")
+    game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
+    before_wallet = portal.wallet(player["token"])
+    portal.turns.billing = None
+    response = asyncio.run(portal.turn(player["token"], game, "Hello", "unbilled-audit"))
+    row = portal.turns.audits.list_for_request(game, "unbilled-audit")[0]
+    assert "billing" not in response
+    assert portal.wallet(player["token"]) == before_wallet
+    assert row["outcome"] == "succeeded"
+    assert row["policy"] is None
+    assert row["summary"]["known_input_tokens"] == 700
+    assert row["summary"]["known_cost_milli_points"] is None
+    assert row["summary"]["total_cost_milli_points"] is None
     asyncio.run(model.client.close())
     asyncio.run(transport.aclose())
