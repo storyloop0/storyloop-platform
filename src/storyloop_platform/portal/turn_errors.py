@@ -1,6 +1,7 @@
 """Turn failure metadata must not guess whether an action was committed."""
 
 from storyloop_harness.context import ContextBudgetExceeded
+from storyloop_harness.generation import GenerationRequestLimitExceeded, GenerationTimeout
 
 
 class TurnInputError(ValueError):
@@ -13,6 +14,22 @@ class TurnRecoveryRequired(ValueError):
 
 def turn_failure(error: Exception, request_id: str | None, *,
                  message: str | None = None, code: str = "TURN_FAILED") -> dict:
+    if isinstance(error, GenerationRequestLimitExceeded):
+        return {
+            "code": "GENERATION_REQUEST_LIMIT_EXCEEDED",
+            "message": "Structured generation request limit exceeded",
+            "retryable": False,
+            "commit_state": "unknown",
+            "request_id": request_id,
+        }
+    if isinstance(error, GenerationTimeout):
+        return {
+            "code": "GENERATION_TIMEOUT",
+            "message": "Structured generation timeout exceeded",
+            "retryable": False,
+            "commit_state": "unknown",
+            "request_id": request_id,
+        }
     unstarted = isinstance(error, TurnInputError)
     recovery_required = isinstance(error, TurnRecoveryRequired)
     budget_exceeded = isinstance(error, ContextBudgetExceeded)

@@ -80,6 +80,7 @@ class ModelFactory:
         from httpx2 import Timeout
         from storyloop_harness.generation import (
             CompatibleOpenAIChatModel,
+            GenerationBudget,
             ThinkingSafeOpenAIChatFormatter,
         )
 
@@ -110,6 +111,10 @@ class ModelFactory:
             formatter=ThinkingSafeOpenAIChatFormatter(),
             tool_choice_policy=definition.tool_choice_policy,
             structured_output_transport=definition.structured_output_transport,
+            generation_budget=GenerationBudget(
+                max_requests=definition.generation_max_requests,
+                timeout_seconds=definition.generation_timeout_seconds,
+            ),
             telemetry=self.telemetry,
             task=task,
         )

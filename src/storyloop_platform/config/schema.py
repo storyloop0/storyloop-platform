@@ -115,6 +115,8 @@ class ModelSettings(SettingsModel):
 
 class ChatModelSettings(ModelSettings):
     kind: Literal["chat"] = "chat"
+    generation_max_requests: PositiveInt = 3
+    generation_timeout_seconds: Seconds = 90
     generation: GenerationSettings = Field(default_factory=GenerationSettings)
     extra_body: dict[str, object] = Field(default_factory=dict, repr=False)
     context_window_tokens: Annotated[int, Field(ge=1024)] = 65536

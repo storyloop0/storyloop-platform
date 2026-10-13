@@ -8,6 +8,7 @@ from storyloop_platform.config import (
     default_settings,
     load_settings,
 )
+from storyloop_harness.generation import GenerationBudget
 
 
 @pytest.mark.parametrize(
@@ -85,6 +86,34 @@ def test_factory_uses_per_task_provider_generation_and_redacts_credentials():
     assert model.client.timeout.read == 25
     assert "credential-value" not in repr(factory)
     assert "credential-value" not in repr(settings)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("generation_max_requests", 0),
+    ("generation_max_requests", -1),
+    ("generation_max_requests", True),
+    ("generation_timeout_seconds", 0),
+    ("generation_timeout_seconds", float("inf")),
+    ("generation_timeout_seconds", float("nan")),
+])
+def test_invalid_generation_budget_settings_are_rejected(field, value):
+    raw = default_settings().model_dump(mode="json")
+    raw["models"]["story"][field] = value
+    with pytest.raises(ValueError) as error:
+        PlatformSettings.model_validate(raw)
+    assert field in str(error.value)
+
+
+def test_factory_uses_custom_generation_budget_without_changing_sdk_retry_setting():
+    raw = default_settings().model_dump(mode="json")
+    raw["models"]["story"].update(
+        generation_max_requests=1, generation_timeout_seconds=0.5
+    )
+    model = ModelFactory(PlatformSettings.model_validate(raw), env={
+        "STORY_MODEL_API_KEY": "offline"
+    }).create_model("single_turn")
+    assert model.generation_budget == GenerationBudget(1, 0.5)
+    assert model.client.max_retries == 2
 
 
 def test_memory_profiles_have_independent_credentials_and_endpoints():

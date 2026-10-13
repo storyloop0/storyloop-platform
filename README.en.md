@@ -155,6 +155,8 @@ For a complete model override, save the following as `config/custom.local.json`.
       "kind": "chat",
       "provider": "default",
       "model": "deepseek-v4.1-flash",
+      "generation_max_requests": 3,
+      "generation_timeout_seconds": 90,
       "generation": {"temperature": 0.7},
       "extra_body": {"enable_thinking": false},
       "tool_choice_policy": "auto_only",
@@ -188,6 +190,8 @@ Validate and launch it with:
 `providers`, `models`, and `routes` replace their entire maps; include every entry and route you need. Fixed sections (`runtime`, `http`, `player_memory`, `credits`) merge one level. Storage merges when its driver is unchanged and replaces when the driver changes. External relative SQLite paths resolve from the settings file's directory unless `storage.path_base` is `cwd`; packaged defaults use the working directory. Credentials belong in the referenced environment variables, never settings JSON.
 
 New saves take their default temperature from `single_turn` (1.0 when unset). Save related scene, narration, and followup generation use the saved temperature override, including after a settings update; each profile's temperature applies when no save override is passed. Standalone prologue generation uses its own profile.
+
+For structured generation, each chat profile defaults to at most 3 completion requests and a 90 second total deadline across retries and fallback. Set `generation_max_requests` and `generation_timeout_seconds` on that chat profile to change these positive limits. They apply per structured generation, not per whole turn; ordinary calls without a schema retain their existing behavior. The provider HTTP `timeout_seconds` and `max_retries` settings remain separate.
 
 To check configured model access explicitly:
 

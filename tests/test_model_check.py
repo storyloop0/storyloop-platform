@@ -154,5 +154,5 @@ def test_cli_close_failure_keeps_task_outcome_and_continues(check, sdk, monkeypa
         "task": "followup_actions", "model": data["models"][data["routes"]["followup_actions"]]["model"],
         "ok": True,
     }
-    assert len(clients) == 2
+    assert [client.max_retries for client in clients] == [1, 0, 1, 0]
     assert len(sdk) == (1 if request_fails else 2)
