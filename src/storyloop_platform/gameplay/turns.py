@@ -13,6 +13,7 @@ from storyloop_harness.generation import ActionOption
 from storyloop_harness.telemetry import Telemetry, session_id_for_game
 
 from storyloop_platform.gameplay.access import GameAccess, require_supported_save
+from storyloop_platform.gameplay.attempt_audit_scope import attempt_audit_scope
 from storyloop_platform.gameplay.factory import GameplayRuntime
 from storyloop_platform.gameplay.locks import PlayerTurnLocks
 from storyloop_platform.gameplay.presentation import package_for_mode, turn_view
@@ -20,6 +21,7 @@ from storyloop_platform.memory.service import PlayerMemoryService
 from storyloop_platform.portal.billing import collect_usage, BillingPolicy
 from storyloop_platform.portal.catalog import GameListing
 from storyloop_platform.portal.moderation import ScenarioModerationService
+from storyloop_platform.portal.model_execution_audits import SQLModelExecutionAudits
 from storyloop_platform.portal.sql_billing import SQLBillingRepository
 from storyloop_platform.portal.sql_repository import SQLPlayerRepository
 from storyloop_platform.portal.turn_errors import TurnInputError, TurnRecoveryRequired
@@ -35,7 +37,8 @@ class TurnExecutionService:
                  settlements: SQLTurnSettlements, billing: SQLBillingRepository | None,
                  billing_for_policy: Callable[[BillingPolicy], SQLBillingRepository],
                  memory_service: PlayerMemoryService, factory: GameplayRuntime,
-                 player_locks: PlayerTurnLocks, telemetry: Telemetry) -> None:
+                 player_locks: PlayerTurnLocks, telemetry: Telemetry,
+                 audits: SQLModelExecutionAudits | None = None) -> None:
         self.store = store
         self.accounts = accounts
         self.game_access = game_access
@@ -47,6 +50,7 @@ class TurnExecutionService:
         self.factory = factory
         self.player_locks = player_locks
         self.telemetry = telemetry
+        self.audits = audits if audits is not None else SQLModelExecutionAudits(accounts.engine)
 
     async def turn(self, player_id: str, game_id: str, text: str,
                    request_id: str | None = None, progress: TurnProgress | None = None) -> dict:
@@ -95,7 +99,10 @@ class TurnExecutionService:
         context = collect_usage() if self.billing is not None and not preview else nullcontext(None)
         preferences = () if preview else await self.memory_service.preferences_for(player_id)
         engine_usage = ()
-        with context as meter, player_preferences_scope(preferences):
+        with attempt_audit_scope(self.audits, player_id=player_id, game_id=game_id,
+                                 request_id=request_id, player_text=text,
+                                 policy=self.billing.policy if self.billing is not None and not preview else None), \
+                context as meter, player_preferences_scope(preferences):
             source_driven = package.story_blueprint is not None
             recovered = (await self._recover_freeform(item, package, game_id, text, turn_id,
                                                       mode)

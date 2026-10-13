@@ -78,6 +78,8 @@ flowchart LR
 
 The platform owns the browser app, accounts, content, saves, and settlement; [Harness](https://github.com/storyloop0/storyloop-harness) owns context projection, narrative generation, and validation. The build script uses the Harness source revision pinned in [pyproject.toml](pyproject.toml).
 
+Structured model attempts are also recorded in a best-effort SQL execution audit with pricing frozen when model work starts. Reported usage produces a known cost estimate; missing, incomplete, or unpriced attempts leave the total unknown. Estimates do not change player credit settlement or receipts. Running records after a hard exit remain unknown and never trigger model replay. Coverage currently excludes embedding, Mem0, and ordinary non-structured calls.
+
 <details>
 <summary>Content publication and ordinary turn flow</summary>
 

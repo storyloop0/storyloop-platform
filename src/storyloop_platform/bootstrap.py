@@ -26,6 +26,7 @@ from storyloop_platform.portal.billing import BillingPolicy
 from storyloop_platform.portal.catalog import GameCatalog
 from storyloop_platform.portal.invitations import InvitationService
 from storyloop_platform.portal.moderation import ScenarioModerationService
+from storyloop_platform.portal.model_execution_audits import SQLModelExecutionAudits
 from storyloop_platform.portal.save_generation_settings import SQLSaveGenerationSettings
 from storyloop_platform.portal.service import PlayerPortal
 from storyloop_platform.portal.sql_billing import SQLBillingRepository
@@ -131,7 +132,7 @@ def build_portal(
             store=store, accounts=accounts, game_access=game_access, moderation=moderation,
             settlements=settlements, billing=billing, billing_for_policy=billing_for_policy,
             memory_service=memory_service, factory=factory, player_locks=player_locks,
-            telemetry=telemetry)
+            telemetry=telemetry, audits=SQLModelExecutionAudits(engine))
 
         def guarded_close() -> None:
             operations.close()
