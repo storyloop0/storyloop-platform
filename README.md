@@ -78,6 +78,8 @@ flowchart LR
 
 平台负责网页、账号、内容、存档与结算；[Harness](https://github.com/storyloop0/storyloop-harness) 负责上下文投影、叙事生成与校验。构建脚本使用 [pyproject.toml](pyproject.toml) 中固定的 Harness 源码版本。
 
+结构化模型尝试另存为尽力而为的 SQL 执行审计，模型工作开始时冻结费率。有效上报用量可估算已知费用；缺失、不完整或无费率的尝试使总费用保持未知。估算不改变玩家积分结算或回执。硬退出后仍为 running 的记录保持未知，不据此重放模型。当前覆盖不包括 embedding、Mem0 和普通非结构化调用。
+
 <details>
 <summary>内容发布与普通回合流程</summary>
 
