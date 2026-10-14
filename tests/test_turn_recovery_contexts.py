@@ -137,7 +137,7 @@ def test_repeat_rejects_changed_visible_observations_without_scene(setup):
             VALUES ('game','event','marker','player',0,'[]','{}',0)"""))
         db.execute(text("""INSERT INTO observations
             (game_id,observation_id,event_id,recipient_id,channel,content,tick,created_order)
-            VALUES ('game','new','event',:player,'scene','seen',0,1)"""), {"player": player})
+            VALUES ('game','new','event','player','scene','seen',0,1)"""))
     with pytest.raises(TurnRecoveryContextError):
         freeze(contexts, player)
 
@@ -206,12 +206,37 @@ def test_context_cascades_on_game_delete(setup):
 def test_observation_ids_follow_store_order_and_reject_duplicates(setup):
     store, player, _ = setup
     store.commit("game", 0, WorldEvent("event", "marker", "player", None, 1, ()),
-                 (Observation("obs1", "event", player, "scene", "first", 1),
-                  Observation("obs2", "event", player, "scene", "second", 1)), ())
+                 (Observation("obs1", "event", "player", "scene", "first", 1),
+                  Observation("obs2", "event", "player", "scene", "second", 1)), ())
     contexts = SQLTurnRecoveryContexts(store.engine)
     value, _ = freeze(contexts, player)
     assert value.base_visible_observation_ids == ("obs1", "obs2")
     assert value.base_version == 1
+
+
+def test_freeze_captures_only_literal_player_actor_observations(setup):
+    store, player, _ = setup
+    with store.engine.begin() as db:
+        for event_id, actor_id, observation_id, recipient_id, created_order in (
+            ("player-event", "player", "player-observation", "player", 1),
+            ("npc-event", "dockhand", "npc-observation", "dockhand", 2),
+            ("account-event", "player", "account-observation", player, 3),
+        ):
+            db.execute(text("""INSERT INTO events
+                (game_id,event_id,kind,actor_id,tick,effects,details,state_version)
+                VALUES ('game',:event_id,'marker',:actor_id,0,'[]','{}',0)"""),
+                {"event_id": event_id, "actor_id": actor_id})
+            db.execute(text("""INSERT INTO observations
+                (game_id,observation_id,event_id,recipient_id,channel,content,tick,created_order)
+                VALUES ('game',:observation_id,:event_id,:recipient_id,'scene','seen',0,:created_order)"""),
+                {"observation_id": observation_id, "event_id": event_id,
+                 "recipient_id": recipient_id, "created_order": created_order})
+    contexts = SQLTurnRecoveryContexts(store.engine)
+    value, created = freeze(contexts, player)
+    assert created
+    assert value.player_id == player
+    assert value.base_visible_observation_ids == ("player-observation",)
+    assert store.load("game").version == 0
 
 
 @pytest.mark.parametrize("column,value", [

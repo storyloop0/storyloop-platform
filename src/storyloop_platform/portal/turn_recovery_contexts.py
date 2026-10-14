@@ -198,9 +198,9 @@ class SQLTurnRecoveryContexts:
             state_hash = snapshot_state_fingerprint(snapshot)
             rows = db.execute(text("""SELECT o.observation_id FROM observations AS o
                 JOIN events AS e ON e.game_id=o.game_id AND e.event_id=o.event_id
-                WHERE o.game_id=:game_id AND o.recipient_id=:player_id
+                WHERE o.game_id=:game_id AND o.recipient_id=:recipient_id
                 ORDER BY e.state_version,o.created_order,o.observation_id"""),
-                {"game_id": game_id, "player_id": player_id}).scalars().all()
+                {"game_id": game_id, "recipient_id": "player"}).scalars().all()
             if existing is not None:
                 if scene is not None:
                     from storyloop_harness.advanced import GeneratedSceneSnapshot
