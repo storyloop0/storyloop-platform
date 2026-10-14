@@ -221,3 +221,8 @@ class PlayerPortal:
     async def turn(self, token: str, game_id: str, text: str,
                    request_id: str | None = None, progress: TurnProgress | None = None) -> dict:
         return await self.turns.turn(self.accounts.resolve_token(token), game_id, text, request_id, progress)
+
+    def turn_recovery_status(self, token: str, game_id: str,
+                             request_id: str, input_hash: str) -> dict:
+        return self.turns.recovery_status(self.accounts.resolve_token(token), game_id,
+                                          request_id, input_hash)

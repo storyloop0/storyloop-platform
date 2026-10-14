@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 import time
 
 from sqlalchemy import Engine, text
@@ -23,13 +24,20 @@ class SQLTurnSettlements:
         self.engine = engine
 
     def get(self, game_id: str, request_id: str, player_text: str) -> TurnSettlement | None:
+        return self.get_by_hash(game_id, request_id,
+                                hashlib.sha256(player_text.encode()).hexdigest())
+
+    def get_by_hash(self, game_id: str, request_id: str,
+                    input_hash: str) -> TurnSettlement | None:
+        if type(input_hash) is not str or not re.fullmatch(r"[0-9a-f]{64}", input_hash):
+            raise ValueError("invalid input hash")
         with self.engine.connect() as db:
             row = db.execute(text("""SELECT * FROM turn_settlement_intents
                 WHERE game_id=:game AND request_id=:request"""),
                 {"game": game_id, "request": request_id}).mappings().first()
         if row is None:
             return None
-        if row["input_hash"] != hashlib.sha256(player_text.encode()).hexdigest():
+        if row["input_hash"] != input_hash:
             raise ValueError("request ID already belongs to different input")
         if row["schema_version"] != 1:
             raise TurnRecoveryRequired("回合计量记录格式不受支持，请联系管理员恢复。")

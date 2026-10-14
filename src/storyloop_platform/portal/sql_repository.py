@@ -153,13 +153,20 @@ class SQLPlayerRepository:
         return tuple(self._save(row) for row in rows)
 
     def get_turn_response(self, game_id: str, request_id: str, text_input: str) -> dict | None:
+        return self.get_turn_response_by_hash(game_id, request_id,
+                hashlib.sha256(text_input.encode()).hexdigest())
+
+    def get_turn_response_by_hash(self, game_id: str, request_id: str,
+                                  input_hash: str) -> dict | None:
+        if type(input_hash) is not str or not re.fullmatch(r"[0-9a-f]{64}", input_hash):
+            raise ValueError("invalid input hash")
         with self.engine.connect() as db:
             row = db.execute(text("""SELECT input_hash,response_json FROM portal_turns
                 WHERE game_id=:game_id AND request_id=:request_id"""),
                 {"game_id": game_id, "request_id": request_id}).mappings().first()
         if row is None:
             return None
-        if not hmac.compare_digest(row["input_hash"], hashlib.sha256(text_input.encode()).digest()):
+        if not hmac.compare_digest(row["input_hash"], bytes.fromhex(input_hash)):
             raise ValueError("request ID already belongs to different input")
         return json.loads(row["response_json"])
 

@@ -43,6 +43,20 @@ def test_status_contract_rejects_inconsistent_combinations(status, can_recover, 
             can_recover=can_recover, reason_code=reason_code))
 
 
+def test_every_other_status_boolean_reason_combination_is_rejected():
+    allowed = set(VALID)
+    reasons = {reason for _, _, reason in VALID}
+    for status in ("complete", "recoverable", "blocked", "not_available"):
+        for can_recover in (False, True):
+            for reason_code in reasons:
+                if (status, can_recover, reason_code) in allowed:
+                    continue
+                with pytest.raises(ValidationError):
+                    turn_recovery_status_adapter.validate_python(dict(
+                        request_id="r", status=status, can_recover=can_recover,
+                        reason_code=reason_code))
+
+
 @pytest.mark.parametrize("mutation", [
     lambda value: value.update(extra="unexpected"),
     lambda value: value.pop("request_id"),

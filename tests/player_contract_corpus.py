@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -190,6 +191,13 @@ def export_corpus(root: Path) -> list[dict]:
                 billed = response("turn:freeform", "View", "POST", base + "/turns", json=turn)
                 replay = response("replay:freeform", "View", "POST", base + "/turns", json=turn)
                 assert billed == replay
+                fingerprint = hashlib.sha256(turn["text"].encode()).hexdigest()
+                response("status:complete", "TurnRecoveryStatus", "GET",
+                         base + "/turns/http-turn/recovery", params={"input_hash": fingerprint})
+                response("status:mismatch", "TurnRecoveryStatus", "GET",
+                         base + "/turns/http-turn/recovery", params={"input_hash": "0" * 64})
+                response("status:no-snapshot", "TurnRecoveryStatus", "GET",
+                         base + "/turns/new-request/recovery", params={"input_hash": fingerprint})
                 assert len([row for row in portal.credit_ledger(token) if row["kind"] == "turn"]) == 1
                 response("resume:billed", "View", "POST", base + "/resume")
                 response("history:billed", "History", "GET", base + "/history")
@@ -234,6 +242,9 @@ def export_corpus(root: Path) -> list[dict]:
                     assert isinstance(input_log.error.call_args.kwargs["exc_info"], ValueError)
                 recovery = create("freeform")
                 commit_player_input(portal.gameplay.store, recovery, "portal-recovery:input", "Hello")
+                response("status:legacy", "TurnRecoveryStatus", "GET",
+                         f"/v1/saves/{recovery}/turns/recovery/recovery",
+                         params={"input_hash": hashlib.sha256(b"Hello").hexdigest()})
                 # Capture only this deliberate recovery fault and assert its log;
                 # unexpected failures elsewhere still reach ordinary logging.
                 with patch("storyloop_platform.lifecycle.logger") as recovery_log:
