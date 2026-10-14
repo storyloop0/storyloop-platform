@@ -193,7 +193,7 @@ Validate and launch it with:
 
 New saves take their default temperature from `single_turn` (1.0 when unset). Save related scene, narration, and followup generation use the saved temperature override, including after a settings update; each profile's temperature applies when no save override is passed. Standalone prologue generation uses its own profile.
 
-For structured generation, each chat profile defaults to at most 3 completion requests and a 90 second total deadline across retries and fallback. Set `generation_max_requests` and `generation_timeout_seconds` on that chat profile to change these positive limits. They apply per structured generation, not per whole turn; ordinary calls without a schema retain their existing behavior. The provider HTTP `timeout_seconds` and `max_retries` settings remain separate.
+For structured generation, each chat profile defaults to at most 3 completion requests and a 90 second total deadline across retries and fallback. Set `generation_max_requests` and `generation_timeout_seconds` on that chat profile to change these positive limits. The per-generation policy applies alongside the turn execution budget. The provider HTTP `timeout_seconds` and `max_retries` settings remain separate.
 
 To check configured model access explicitly:
 
@@ -213,6 +213,14 @@ The local CLI uses packaged defaults on the first launch. Missing keys can be en
 Local launch selection is `--catalog`, then `STORY_CATALOG`, then the remembered catalog. Without `--config`, successful local launches remember the custom settings path (or packaged defaults) and database path; `--db` overrides the remembered database. An explicit `--config` starts a fresh selection and requires `--catalog` or `STORY_CATALOG`; it does not inherit remembered settings or database paths. Online launches use `--profile online`, have no remembered local paths or key prompt, and validate required deployment environment values before creating resources. `--profile` must match the settings `environment`.
 
 </details>
+
+### Turn execution and preference policy
+
+`runtime.turn_max_requests` defaults to 6 and `runtime.turn_timeout_seconds` to 180 seconds. Scene, campaign and other compatible-adapter calls share this budget, including preview and billing-disabled turns. The deadline starts after prechecks, package and preference reads and ends after view construction. It excludes queue/lock wait, SQL audit finalization, credit settlement, network delivery and background memory extraction. Limit and timeout failures return fixed HTTP/SSE errors without automatic retry; world changes may already have committed. Existing success-usage settlement remains unchanged.
+
+`player_memory.generated_preference_max_age_days` defaults to 90. Automatic preferences leave prompts at 90 actual UTC days after creation but remain visible, editable and deletable. User corrections remain effective; missing, malformed, naive or future automatic timestamps show unknown and stay out of prompts. Explicit `null` disables date filtering. The read-only policy filters the existing maximum 20 candidates before selecting up to 8; it neither adds embedding calls nor deletes Mem0 records.
+
+Platform includes SQL storage and migration for generated-scene snapshots while player and preview recovery remain disabled. Settlement recovery using historical usage and frozen rates is a later step.
 
 <details>
 <summary>Service composition and shutdown lifecycle</summary>
