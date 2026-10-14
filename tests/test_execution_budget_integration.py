@@ -14,19 +14,218 @@ from storyloop_harness.generation import (
     ExecutionBudget, ExecutionRequestLimitExceeded, ExecutionTimeout, Msg,
 )
 from storyloop_harness import ScenarioPackage
+from storyloop_harness import TurnEngine, TurnInput
 from storyloop_harness.advanced import SceneContext, Snapshot, StorySegment
 from storyloop_harness.models.execution_control import current_execution_control
+from storyloop_harness.generation import execution_budget_scope
+from storyloop_harness.testing import OfflineModel
 from storyloop_platform.config import PlatformSettings, default_settings
 from storyloop_platform.generators.novel_narrator import NovelTurnNarrator
 from storyloop_platform.generators.scene_narrator import CampaignSceneNarrator
+from storyloop_platform.generators.scene_messages import SingleCallMessageWriter
 from storyloop_platform.portal.http_api import create_app
 from storyloop_platform.portal.turn_errors import turn_failure
 from storyloop_platform.portal.turn_errors import TurnRecoveryRequired
 from storyloop_platform.runtime.guidance import GuidanceAdvisor
+from storyloop_platform.runtime.campaign import CampaignProgram, CampaignSession
 from storyloop_platform.adapters.store import SQLiteGameStore
 from test_turn_failure_contract import portal
 from test_attempt_audit_integration import sdk_model
 from test_generation_budget_integration import _completion, Decision
+from scenario_fixtures import source_package
+
+
+def test_rule_guidance_wait_uses_deadline_without_sdk_sends(portal, monkeypatch):
+    from storyloop_platform.runtime.guidance import RuleGuidanceProvider
+
+    player = portal.register("reader", "password-123")
+    game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
+    portal.gameplay.factory.offline_models.model = OfflineModel()
+    portal.turns.execution_budget = ExecutionBudget(6, 0.1)
+    entered = []
+
+    async def slow_rule(self, context):
+        entered.append(current_execution_control().sends)
+        await asyncio.sleep(1)
+        return ("late guidance",)
+
+    monkeypatch.setattr(RuleGuidanceProvider, "suggest", slow_rule)
+    with pytest.raises(ExecutionTimeout):
+        asyncio.run(portal.turn(player["token"], game, "Hello", "slow-rule"))
+    assert entered == [0]
+    assert portal.gameplay.store.event_exists(game, "portal-slow-rule:input")
+
+
+def test_multi_sender_message_writer_uses_one_actual_sdk_post(monkeypatch, tmp_path):
+    package = source_package()
+    store = SQLiteGameStore(str(tmp_path / "messages.sqlite3"))
+    program = CampaignProgram.from_dict({
+        "id": package.package_id, "ticks_per_day": 4, "final_tick": 4,
+        "steps": [
+            {"id": "arrival", "at": 0, "kind": "choice", "prompt": "Arrive",
+             "options": [{"id": "ready", "label": "Ready"}]},
+            {"id": "message", "at": 0, "kind": "message", "prompt": "Send a note",
+             "options": [{"id": "dockhand", "label": "Dockhand", "recipient": "dockhand"}],
+             "incoming": [
+                 {"actor": "dockhand", "label": "Dockhand", "text": "fallback one", "min_affinity": 0},
+                 {"actor": "vendor", "label": "Vendor", "text": "fallback two", "min_affinity": 0},
+             ]},
+            {"id": "ending", "at": 4, "kind": "finale", "choice_key": "arrival",
+             "threshold": 0, "success_text": "End", "other_text": "End"},
+        ],
+    })
+    state = dict(package.initial_state)
+    state["scenario"] = {"id": package.package_id, "version": package.version}
+    campaign = program.initial_state(["dockhand", "vendor"])
+    campaign["met"].update(dockhand=True, vendor=True)
+    state["campaign"] = campaign
+    store.create_game(Snapshot("game", 0, 0, state))
+    posts = []
+
+    def reply(request):
+        posts.append(request)
+        return _completion('{"prose":"Night scene", "messages":['
+                           '{"actor_id":"dockhand","text":"First reply"},'
+                           '{"actor_id":"vendor","text":"Second reply"}]}')
+
+    model, transport = sdk_model(monkeypatch, reply)
+    writer = SingleCallMessageWriter(store, package, model)
+    session = CampaignSession(store, program, message_batch_writer=writer,
+                              scene_turn_includes_presentation=True)
+
+    async def run():
+        try:
+            async with execution_budget_scope(ExecutionBudget(1, 10)) as control:
+                await session.start("game", present_opening=False)
+                await session.submit("game", "/choose ready", "arrival-turn")
+                scene = await session.submit("game", "/choose dockhand Hello", "message-turn")
+                assert control.sends == 1
+                return scene
+        finally:
+            await model.client.close()
+            await transport.aclose()
+
+    scene = asyncio.run(run())
+    assert len(posts) == 1
+    assert "First reply" in scene.text and "Second reply" in scene.text
+    body = json.loads(posts[0].content)
+    assert all(sender in str(body) for sender in ("dockhand", "vendor"))
+
+
+def test_skipped_campaign_narration_has_zero_actual_sends():
+    from test_campaign import CampaignTests
+
+    case = CampaignTests()
+    case.setUp()
+    try:
+        class ForbiddenPresenter:
+            async def present(self, context):
+                raise AssertionError("blocked gate must skip model narration")
+
+        case.session.scene_presenter = ForbiddenPresenter()
+        case.session.novel_presenter = ForbiddenPresenter()
+
+        async def run():
+            async with execution_budget_scope(ExecutionBudget(1, 10)) as control:
+                await case.session.start("g", present_opening=False)
+                outcome = await case.session.submit("g", "casual chat", "blocked-gate")
+                assert control.sends == 0
+                return outcome
+
+        outcome = asyncio.run(run())
+        assert outcome.gate_id == "arrival"
+        assert case.turn_engine.calls == []
+    finally:
+        case.tearDown()
+
+
+@pytest.mark.parametrize("origin", ["checkpoint", "progress"])
+@pytest.mark.parametrize("error_type", [ExecutionRequestLimitExceeded, ExecutionTimeout])
+def test_engine_terminal_errors_from_checkpoint_and_progress_are_not_swallowed(
+    tmp_path, origin, error_type
+):
+    package = ScenarioPackage.load(Path(__file__).resolve().parents[1] / "examples/freeform")
+    store = SQLiteGameStore(str(tmp_path / "engine.sqlite3"))
+    package.seed_game(store, "game")
+    engine = TurnEngine(store, package, OfflineModel())
+
+    async def fail(*args, **kwargs):
+        raise error_type()
+
+    if origin == "checkpoint":
+        engine.checkpoints = SimpleNamespace(refresh=fail)
+    turn = TurnInput("game", "Hello", "terminal", package.version)
+
+    async def run():
+        async with execution_budget_scope(ExecutionBudget(6, 10)):
+            await engine.run_turn(turn, progress=fail if origin == "progress" else None)
+
+    with pytest.raises(error_type):
+        asyncio.run(run())
+    assert store.event_exists("game", "terminal:input") == (origin == "checkpoint")
+
+
+def test_explicit_turn_task_cancellation_remains_cancelled_error(portal):
+    entered = asyncio.Event()
+
+    class WaitingModel(OfflineModel):
+        async def __call__(self, *args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+    portal.turns.execution_budget = ExecutionBudget(6, 10)
+    portal.gameplay.factory.offline_models.model = WaitingModel()
+
+    async def run():
+        player = portal.register("reader", "password-123")
+        game = (await portal.create_save(player["token"], "npc-chat"))["game_id"]
+        task = asyncio.create_task(portal.turn(player["token"], game, "Hello", "shutdown-cancel"))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return game
+
+    game = asyncio.run(run())
+    assert not portal.gameplay.store.event_exists(game, "portal-shutdown-cancel:input")
+
+
+def test_prepared_then_cached_turn_replay_sends_no_more_sdk_posts(portal, monkeypatch):
+    posts = []
+
+    def reply(request):
+        posts.append(request)
+        return _completion('{"prose":"A quiet harbor."}')
+
+    model, transport = sdk_model(monkeypatch, reply)
+    portal.gameplay.factory.offline_models.model = model
+    player = portal.register("reader", "password-123")
+    game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
+    settle = portal.billing.settle_turn
+
+    def fail_settlement(*args, **kwargs):
+        raise RuntimeError("settlement interrupted")
+
+    monkeypatch.setattr(portal.billing, "settle_turn", fail_settlement)
+
+    async def run():
+        try:
+            with pytest.raises(RuntimeError, match="settlement interrupted"):
+                await portal.turn(player["token"], game, "Hello", "prepared-replay")
+            assert len(posts) == 1
+            monkeypatch.setattr(portal.billing, "settle_turn", settle)
+            prepared = await portal.turn(player["token"], game, "Hello", "prepared-replay")
+            assert len(posts) == 1
+            cached = await portal.turn(player["token"], game, "Hello", "prepared-replay")
+            assert len(posts) == 1
+            return prepared, cached
+        finally:
+            await model.client.close()
+            await transport.aclose()
+
+    prepared, cached = asyncio.run(run())
+    assert cached == prepared
+    assert prepared["body"] == "A quiet harbor."
 
 
 def test_runtime_defaults_and_overrides():
