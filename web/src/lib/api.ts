@@ -1,5 +1,5 @@
-import { parseView, parseHistory } from "./contracts";
-import type { View, TurnStreamEvent } from "./contracts";
+import { parseView, parseHistory, parseTurnRecoveryStatus } from "./contracts";
+import type { View, TurnStreamEvent, TurnRecoveryStatus } from "./contracts";
 import { ApiError, responseError, readTurnStream } from "./playerResponses";
 export { ApiError } from "./playerResponses";
 export type { View, History, StorySegment, Interaction, TurnBilling, TurnFailure, TurnStreamEvent } from "./contracts";
@@ -164,6 +164,7 @@ async function requestPayload(
   path: string,
   method = "GET",
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const response = await fetch(`${API_BASE}${path}`, {
     method,
@@ -172,6 +173,7 @@ async function requestPayload(
       ...(body ? { "Content-Type": "application/json" } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   });
   let payload: unknown;
   try {
@@ -184,6 +186,16 @@ async function requestPayload(
     throw responseError(response.status, payload);
   }
   return payload;
+}
+
+export async function getTurnRecoveryStatus(
+  gameId: string, requestId: string, inputHash: string, signal?: AbortSignal,
+): Promise<TurnRecoveryStatus> {
+  const payload = await requestPayload(
+    `/v1/saves/${encodeURIComponent(gameId)}/turns/${encodeURIComponent(requestId)}/recovery?input_hash=${encodeURIComponent(inputHash)}`,
+    "GET", undefined, signal,
+  );
+  return parseTurnRecoveryStatus(payload, requestId);
 }
 
 async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
@@ -351,4 +363,5 @@ export const api = {
       { text, request_id: requestId },
     ),
   turnStream: streamTurn,
+  getTurnRecoveryStatus,
 };

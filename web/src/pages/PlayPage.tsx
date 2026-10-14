@@ -13,6 +13,7 @@ import { containsStoryCommand, isStoryCommandInput, playerFacingText, storyLineB
 import { clearPendingTurn, discardUnstartedTurn, readPendingTurn, savePendingTurn } from "../lib/pendingTurn";
 import { createRequestId } from "../lib/requestId";
 import { limitTurnInput } from "../lib/turnInput";
+import { allowRecovery, inputHash, matchesRecovery, upsertCompletedTurn, type RecoveryProof } from "../lib/turnRecovery";
 
 function playerAction(text: string | null, previous: View | null | undefined) {
   if (!text) return "早期存档的行动记录不可用";
@@ -68,6 +69,9 @@ export function PlayPage() {
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const [pending, setPending] = useState<PendingTurn | null>(null);
+  const [recoveryProof, setRecoveryProof] = useState<RecoveryProof | null>(null);
+  const recoveryGeneration = useRef(0);
+  const sendingRef = useRef(false);
   const [now, setNow] = useState(Date.now());
   const [settings, setSettings] = useState<SaveSettings | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -150,6 +154,28 @@ export function PlayPage() {
     };
   }, [gameId, retry]);
 
+  useEffect(() => {
+    const generation = ++recoveryGeneration.current;
+    setRecoveryProof(null);
+    if (!pending?.error || busy) return;
+    const controller = new AbortController();
+    const requestId = pending.id;
+    const text = pending.text;
+    void inputHash(text)
+      .then((hash) => {
+        if (controller.signal.aborted) return null;
+        return api.getTurnRecoveryStatus(gameId, requestId, hash, controller.signal);
+      })
+      .then((status) => {
+        if (!status || controller.signal.aborted || recoveryGeneration.current !== generation || sendingRef.current) return;
+        setRecoveryProof({ gameId, requestId, text, generation, status });
+      })
+      .catch(() => {
+        // The original pending request stays locked when proof cannot be read or validated.
+      });
+    return () => controller.abort();
+  }, [gameId, pending?.id, pending?.text, pending?.error, busy]);
+
   useLayoutEffect(() => {
     if (!history?.turns.length && !pending) return;
     // Keep the true end of the reader in view. Smooth scrolling on every SSE
@@ -161,10 +187,17 @@ export function PlayPage() {
   }, [history?.turns.length, pending?.stage, pending?.segments.length,
       pending?.body, current?.interaction?.id, current?.action_options]);
 
-  async function submitText(text: string): Promise<boolean> {
-    if (!text.trim() || busy || (current?.complete && !pending?.error)) return false;
-    if (pending && (!pending.error || pending.text !== text || pending.retryable === false)) return false;
+  async function submitText(text: string, recover = false): Promise<boolean> {
+    if (!text.trim() || busy || sendingRef.current || (current?.complete && !pending?.error)) return false;
+    const recoveryAllowed = recover && matchesRecovery(
+      recoveryProof, gameId, pending, recoveryGeneration.current, busy,
+    );
+    if (pending && (!pending.error || pending.text !== text ||
+      (pending.retryable === false && !recoveryAllowed))) return false;
+    if (recover && !recoveryAllowed) return false;
+    const keepNonretryableLock = pending?.retryable === false;
     setError("");
+    setRecoveryProof(null);
     let requestId: string;
     try {
       requestId = pending?.id ?? createRequestId();
@@ -172,11 +205,14 @@ export function PlayPage() {
       setError("浏览器无法生成请求标识，请刷新页面后重试。");
       return false;
     }
+    sendingRef.current = true;
     setBusy(true);
-    savePendingTurn(gameId, { id: requestId, text });
+    savePendingTurn(gameId, keepNonretryableLock
+      ? { id: requestId, text, retryable: false, error: pending?.error }
+      : { id: requestId, text });
     setPending({
       id: requestId, text, stage: "received", segments: [], body: "", error: "",
-      startedAt: Date.now(),
+      retryable: keepNonretryableLock ? false : undefined, startedAt: Date.now(),
     });
     if (!isStoryCommandInput(text)) setDraft("");
     try {
@@ -195,9 +231,7 @@ export function PlayPage() {
         previous
           ? {
               ...previous,
-              turns: previous.turns.some((turn) => turn.request_id === requestId)
-                ? previous.turns
-                : [...previous.turns, { request_id: requestId, input: text, response }],
+              turns: upsertCompletedTurn(previous.turns, requestId, text, response),
             }
           : previous,
       );
@@ -208,21 +242,24 @@ export function PlayPage() {
       setPending(null);
       return true;
     } catch (cause) {
-      if (cause instanceof ApiError && discardUnstartedTurn(gameId, requestId, cause.failure)) {
+      if (!keepNonretryableLock && cause instanceof ApiError &&
+          discardUnstartedTurn(gameId, requestId, cause.failure)) {
         setPending(null);
         setDraft(text);
         setError(errorMessage(cause));
         return false;
       }
-      if (cause instanceof ApiError && cause.failure?.retryable === false &&
-          cause.failure.request_id === requestId) {
+      if (keepNonretryableLock || (cause instanceof ApiError && cause.failure?.retryable === false &&
+          cause.failure.request_id === requestId)) {
         savePendingTurn(gameId, { id: requestId, text, retryable: false, error: errorMessage(cause) });
       }
       setPending((previous) => previous?.id === requestId
         ? { ...previous, error: errorMessage(cause),
-            retryable: cause instanceof ApiError ? cause.failure?.retryable : undefined } : previous);
+            retryable: keepNonretryableLock ? false
+              : cause instanceof ApiError ? cause.failure?.retryable : undefined } : previous);
       return false;
     } finally {
+      sendingRef.current = false;
       setBusy(false);
     }
   }
@@ -417,7 +454,13 @@ export function PlayPage() {
                       )}
                       {pending.error && (
                         <div className="pending-actions">
-                          {pending.retryable !== false && <Button type="button" onClick={() => void submitText(pending.text)}>重试这条行动</Button>}
+                          {matchesRecovery(recoveryProof, gameId, pending, recoveryGeneration.current, busy)
+                            ? <Button type="button" disabled={busy || !allowRecovery(recoveryProof?.status ?? null, busy)}
+                                onClick={() => void submitText(pending.text, true)}>
+                                {recoveryProof?.status.status === "complete" ? "取回结果" : "继续恢复这条行动"}
+                              </Button>
+                            : pending.retryable !== false &&
+                              <Button type="button" disabled={busy} onClick={() => void submitText(pending.text)}>重试这条行动</Button>}
                         </div>
                       )}
                     </div>

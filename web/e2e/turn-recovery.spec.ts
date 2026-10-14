@@ -1,11 +1,15 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { commonApi, view } from "./support";
+import { createHash } from "node:crypto";
 
-async function playerApi(page: Page, initial: typeof view & Record<string, unknown>, turn: (route: Route) => Promise<void>) {
+async function playerApi(page: Page, initial: typeof view & Record<string, unknown>, turn: (route: Route) => Promise<void>,
+  recovery?: (route: Route) => Promise<void>) {
   await page.route("**/v1/**", async (route) => {
     if (await commonApi(route)) return;
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/turns/stream")) return turn(route);
+    if (path.endsWith("/recovery")) return recovery
+      ? recovery(route) : route.fulfill({ status: 404, json: { detail: "No snapshot" } });
     if (path === "/v1/saves") return route.fulfill({ json: { saves: [{ ...initial, title: "测试故事", available: true }] } });
     if (path.endsWith("/resume")) return route.fulfill({ json: initial });
     if (path.endsWith("/history")) return route.fulfill({ json: { game_id: "game", intro: initial, turns: [] } });
@@ -16,6 +20,123 @@ async function playerApi(page: Page, initial: typeof view & Record<string, unkno
     return route.fulfill({ status: 404, json: { detail: "Unexpected test request" } });
   });
 }
+
+test("positive read-only proof manually retrieves the original request once after reload", async ({ page }) => {
+  const text = " 你好\n";
+  const posts: { request_id: string; text: string }[] = [];
+  const queries: string[] = [];
+  await page.addInitScript((pending) => sessionStorage.setItem("storyloop.pending.game", JSON.stringify(pending)),
+    { id: "saved-request", text, retryable: false, error: "需要人工恢复" });
+  await playerApi(page, view, async (route) => {
+    posts.push(route.request().postDataJSON());
+    const response = { ...view, state_version: 1, body: "原结果已取回。", turn_id: "saved-request" };
+    await route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify({ type: "complete", view: response })}\n\n` });
+  }, async (route) => {
+    queries.push(route.request().url());
+    await route.fulfill({ json: { request_id: "saved-request", status: "complete", can_recover: true,
+      reason_code: "RECEIPT_READY" } });
+  });
+  await page.goto("/play/game");
+  await expect(page.getByRole("button", { name: "取回结果" })).toBeVisible();
+  expect(queries).toHaveLength(1);
+  expect(new URL(queries[0]).searchParams.get("input_hash")).toBe(createHash("sha256").update(text).digest("hex"));
+  await page.getByRole("button", { name: "取回结果" }).click();
+  await expect(page.getByText("原结果已取回。", { exact: true })).toHaveCount(1);
+  await expect(page.locator(".player-entry").filter({ hasText: "你好" })).toHaveCount(1);
+  expect(posts).toEqual([{ request_id: "saved-request", text }]);
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("storyloop.pending.game"))).toBeNull();
+});
+
+for (const invalidStatus of [
+  { request_id: "other-request", status: "recoverable", can_recover: true, reason_code: "SCENE_READY" },
+  { request_id: "saved-request", status: "recoverable", can_recover: false, reason_code: "SCENE_READY" },
+  { request_id: "saved-request", status: "recoverable", can_recover: true, reason_code: "SCENE_READY", extra: true },
+]) test(`invalid status ${JSON.stringify(invalidStatus)} keeps the nonretryable pending action locked`, async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem("storyloop.pending.game",
+    JSON.stringify({ id: "saved-request", text: "原文", retryable: false, error: "需要人工恢复" })));
+  let posts = 0;
+  await playerApi(page, view, async (route) => { posts++; await route.abort(); }, async (route) => {
+    await route.fulfill({ json: invalidStatus });
+  });
+  await page.goto("/play/game");
+  await expect(page.getByText("需要人工恢复", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "继续恢复这条行动" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重试这条行动" })).toHaveCount(0);
+  expect(posts).toBe(0);
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("storyloop.pending.game")!))).toMatchObject({ id: "saved-request", text: "原文" });
+});
+
+test("scene recovery sends once and disables the recovery action during the send", async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem("storyloop.pending.game",
+    JSON.stringify({ id: "saved-request", text: "原文", retryable: false, error: "需要人工恢复" })));
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const posts: { request_id: string; text: string }[] = [];
+  await playerApi(page, view, async (route) => {
+    posts.push(route.request().postDataJSON());
+    await held;
+    await route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify({ type: "complete",
+      view: { ...view, state_version: 1, body: "恢复后的故事。", turn_id: "saved-request" } })}\n\n` });
+  }, async (route) => route.fulfill({ json: { request_id: "saved-request", status: "recoverable",
+    can_recover: true, reason_code: "SCENE_READY" } }));
+  await page.goto("/play/game");
+  const button = page.getByRole("button", { name: "继续恢复这条行动" });
+  await expect(button).toBeVisible();
+  await button.click();
+  await expect(button).toHaveCount(0);
+  expect(posts).toEqual([{ request_id: "saved-request", text: "原文" }]);
+  release();
+  await expect(page.getByText("恢复后的故事。", { exact: true })).toHaveCount(1);
+});
+
+test("a failed approved replay keeps the original nonretryable lock", async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem("storyloop.pending.game",
+    JSON.stringify({ id: "saved-request", text: "原文", retryable: false, error: "需要人工恢复" })));
+  let statusReads = 0;
+  await playerApi(page, view, async (route) => route.abort(), async (route) => {
+    statusReads++;
+    if (statusReads === 1) return route.fulfill({ json: { request_id: "saved-request", status: "recoverable",
+      can_recover: true, reason_code: "SCENE_READY" } });
+    return route.fulfill({ status: 503, json: { detail: "Unavailable" } });
+  });
+  await page.goto("/play/game");
+  await page.getByRole("button", { name: "继续恢复这条行动" }).click();
+  await expect.poll(() => statusReads).toBe(2);
+  await expect(page.getByRole("button", { name: "重试这条行动" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "继续恢复这条行动" })).toHaveCount(0);
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("storyloop.pending.game")!))).toMatchObject({
+    id: "saved-request", text: "原文", retryable: false,
+  });
+});
+
+test("a delayed status for save A cannot unlock save B", async ({ page }) => {
+  await page.addInitScript(() => {
+    for (const game of ["game", "game-b"]) sessionStorage.setItem(`storyloop.pending.${game}`,
+      JSON.stringify({ id: `request-${game}`, text: `action-${game}`, retryable: false, error: "需要人工恢复" }));
+  });
+  let release!: () => void;
+  let started!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const queried = new Promise<void>((resolve) => { started = resolve; });
+  await playerApi(page, view, async (route) => route.abort(), async (route) => {
+    if (new URL(route.request().url()).pathname.includes("/saves/game/")) {
+      started();
+      await held;
+      await route.fulfill({ json: { request_id: "request-game", status: "recoverable",
+        can_recover: true, reason_code: "SCENE_READY" } }).catch(() => {});
+    } else {
+      await route.fulfill({ json: { request_id: "request-game-b", status: "blocked",
+        can_recover: false, reason_code: "LATER_REQUEST" } });
+    }
+  });
+  await page.goto("/play/game");
+  await queried;
+  await page.goto("/play/game-b");
+  release();
+  await expect(page.getByText("action-game-b", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "继续恢复这条行动" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "取回结果" })).toHaveCount(0);
+});
 
 test("old oversized choice unlocks editing and submits a shorter note with a fresh ID", async ({ page }) => {
   const oldNote = "字".repeat(10000);
