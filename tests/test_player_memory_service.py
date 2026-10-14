@@ -3,6 +3,7 @@
 import asyncio
 import threading
 from contextlib import nullcontext
+from datetime import datetime, timezone
 
 import pytest
 
@@ -110,7 +111,7 @@ class FakeTelemetry:
 def test_status_collection_cache_and_clear_are_player_scoped():
     async def run():
         memory, jobs = FakeMemory(), FakeJobs()
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         memory.rows["first"] = [{"text": "slow pacing"}]
         assert (await service.status("first"))["enabled"] is False
         service.queue_input("first", "game", "before", "I prefer slow pacing")
@@ -150,7 +151,7 @@ def test_preferences_are_bounded_and_optional_read_failure_degrades_safely():
     async def run():
         memory, jobs = FakeMemory(), FakeJobs()
         jobs.set_enabled("player", True)
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         memory.error = True
         assert await service.preferences_for("player") == ()
         memory.error = False
@@ -162,7 +163,7 @@ def test_preferences_are_bounded_and_optional_read_failure_degrades_safely():
 def test_campaign_controls_are_not_collected():
     memory, jobs = FakeMemory(), FakeJobs()
     jobs.set_enabled("player", True)
-    service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+    service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
     for text in ("/continue", "/next", "/rest", "/choose a 一句话"):
         service.queue_input("player", "game", text, text)
     service.queue_input("player", "game", "speech", "我喜欢慢慢认识人。")
@@ -177,7 +178,7 @@ def test_worker_settles_extraction_and_does_not_bill_player(fails):
         memory.rows["player"] = [{"text": "old preference"}]
         batch = MemoryBatch("player", tuple(("game", str(i), "slow pacing") for i in range(6)))
         jobs.batches.append(batch)
-        service = PlayerMemoryService(memory, jobs, True, telemetry, OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, telemetry, OperationSupervisor(), generated_preference_max_age_days=None)
         assert await service.preferences_for("player") == ("old preference",)
         if not fails:
             memory.rows["player"] = [{"text": "new preference"}]
@@ -209,7 +210,7 @@ def test_worker_shutdown_finishes_claimed_batch_before_close():
         memory.remember = remember
         batch = MemoryBatch("player", (("game", "request", "preference"),))
         jobs.batches.append(batch)
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         worker = asyncio.create_task(service.run_worker())
         try:
             assert await asyncio.to_thread(started.wait, 5)
@@ -229,7 +230,7 @@ def test_worker_shutdown_finishes_claimed_batch_before_close():
 def test_missing_provider_disables_worker_and_collection():
     async def run():
         jobs = FakeJobs()
-        service = PlayerMemoryService(None, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(None, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         assert (await service.status("player"))["available"] is False
         assert await service.preferences_for("player") == ()
         service.queue_input("player", "game", "request", "a long preference input")
@@ -243,7 +244,7 @@ def test_missing_provider_disables_worker_and_collection():
 
 def test_idle_worker_stop_is_explicit_and_prompt():
     async def run():
-        service = PlayerMemoryService(FakeMemory(), FakeJobs(), True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(FakeMemory(), FakeJobs(), True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         worker = asyncio.create_task(service.run_worker())
         try:
             service.request_stop()
@@ -265,7 +266,7 @@ def test_repeated_worker_cancellation_preserves_real_batch_and_close_guard():
         memory.remember = remember
         batch = MemoryBatch("player", (("game", "request", "preference"),))
         jobs.batches.append(batch)
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         worker = asyncio.create_task(service.run_worker())
         try:
             assert await asyncio.to_thread(started.wait, 2)
@@ -302,7 +303,7 @@ def test_inflight_preferences_cannot_publish_after_player_mutation(mutation):
             return rows
 
         memory.list_memories = held_snapshot
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         read = asyncio.create_task(service.preferences_for("player"))
         try:
             assert await asyncio.to_thread(captured.wait, 5)
@@ -348,7 +349,7 @@ def test_clear_invalidates_cache_when_provider_finishes_without_normal_return(ou
             if outcome == "error":
                 raise RuntimeError("cleanup failed after deletion")
 
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         assert await service.preferences_for("player") == ("old preference",)
         memory.clear = held_clear
         clearing = asyncio.create_task(service.clear("player"))
@@ -372,7 +373,7 @@ def test_failed_extraction_invalidates_cache_after_partial_provider_write():
         memory, jobs = FakeMemory(), FakeJobs()
         jobs.set_enabled("player", True)
         memory.rows["player"] = [{"text": "old preference"}]
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         assert await service.preferences_for("player") == ("old preference",)
 
         def partial_remember(*args):
@@ -411,7 +412,7 @@ def test_read_started_during_clear_cannot_repopulate_after_clear_settles():
             return rows
 
         memory.clear, memory.list_memories = held_clear, held_snapshot
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         clearing = asyncio.create_task(service.clear("player"))
         read = None
         try:
@@ -439,7 +440,7 @@ def test_single_record_controls_scope_queue_and_cache():
         jobs.set_enabled("second", True)
         memory.rows["first"] = [{"id": "a", "text": "old preference"}]
         memory.rows["second"] = [{"id": "b", "text": "other preference"}]
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         assert await service.preferences_for("first") == ("old preference",)
         jobs.enqueue("first", "g", "a1", "old preference")
         jobs.enqueue("second", "g", "b1", "other preference")
@@ -487,7 +488,7 @@ def test_inflight_read_cannot_restore_pre_correction_profile():
             return rows
 
         memory.list_memories = held_snapshot
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         read = asyncio.create_task(service.preferences_for("player"))
         try:
             assert await asyncio.to_thread(captured.wait, 5)
@@ -504,7 +505,7 @@ def test_background_extraction_does_not_discard_new_turn_input():
     async def run():
         memory, jobs = FakeMemory(), FakeJobs()
         jobs.set_enabled("player", True)
-        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor())
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(), generated_preference_max_age_days=None)
         started_epoch = service.collection_epoch("player")
         batch = MemoryBatch("player", (("game", "old", "long enough prior input"),))
         jobs.batches.append(batch)
@@ -513,4 +514,64 @@ def test_background_extraction_does_not_discard_new_turn_input():
                             expected_epoch=started_epoch)
         assert jobs.pending_count("player") == 1
         service.close()
+    asyncio.run(run())
+
+
+def test_cached_records_reproject_at_cutoff_without_queue_or_epoch_change():
+    async def run():
+        memory, jobs = FakeMemory(), FakeJobs()
+        jobs.set_enabled("player", True)
+        now = [datetime(2026, 10, 13, 23, 59, 59, tzinfo=timezone.utc)]
+        row = dict(id="m", text="slow", created_at="2026-07-16T00:00:00Z",
+                   updated_at="2026-10-13T00:00:00Z", source="story_turn_batch")
+        memory.rows["player"] = [row]
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(),
+                                      utc_now=lambda: now[0])
+        reads = memory.reads
+        assert await service.preferences_for("player") == ("slow",)
+        assert memory.reads == reads + 1
+        row.update(text="changed", created_at="2026-10-01T00:00:00Z", source="user_correction")
+        assert await service.preferences_for("player") == ("slow",)
+        epoch = service.collection_epoch("player")
+        service.queue_input("player", "game", "first", "long enough input", expected_epoch=epoch)
+        inputs = list(jobs.inputs)
+        now[0] = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        assert await service.preferences_for("player") == ()
+        assert memory.reads == reads + 1
+        assert service.collection_epoch("player") == epoch
+        assert jobs.inputs == inputs
+        service.queue_input("player", "game", "second", "another input", expected_epoch=epoch)
+        assert len(jobs.inputs) == 2
+        memory.rows["player"] = [dict(id="m", text="slow", created_at="2026-07-16T00:00:00Z",
+                                      updated_at="2026-10-13T00:00:00Z", source="story_turn_batch")]
+        status = await service.status("player")
+        assert status["generated_preference_max_age_days"] == 90
+        assert status["memories"] == [dict(memory.rows["player"][0], freshness="expired",
+                                          expires_at="2026-10-14T00:00:00Z")]
+    asyncio.run(run())
+
+
+def test_held_read_projects_after_await_and_malformed_neighbor_isolated():
+    async def run():
+        memory, jobs = FakeMemory(), FakeJobs()
+        jobs.set_enabled("player", True)
+        now = [datetime(2026, 10, 13, 23, 59, 59, tzinfo=timezone.utc)]
+        started, release = threading.Event(), threading.Event()
+        rows = [dict(id="bad", text="bad", created_at="oops", source="story_turn_batch"),
+                dict(id="good", text="good", created_at="2026-07-16T00:00:00Z",
+                     source="story_turn_batch")]
+        def held_list(player_id):
+            started.set()
+            assert release.wait(5)
+            return rows
+        memory.list_memories = held_list
+        service = PlayerMemoryService(memory, jobs, True, FakeTelemetry(), OperationSupervisor(),
+                                      utc_now=lambda: now[0])
+        read = asyncio.create_task(service.preferences_for("player"))
+        assert await asyncio.to_thread(started.wait, 5)
+        now[0] = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        release.set()
+        assert await read == ()
+        now[0] = datetime(2026, 10, 13, 23, 59, 59, tzinfo=timezone.utc)
+        assert await service.preferences_for("player") == ("good",)
     asyncio.run(run())

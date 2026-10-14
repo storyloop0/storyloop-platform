@@ -170,6 +170,7 @@ class PlayerMemorySettings(SettingsModel):
     path_env: EnvName | None = None
     extraction_profile: Name | None = None
     embedding_profile: Name | None = None
+    generated_preference_max_age_days: PositiveInt | None = 90
 
 
 class CreditsSettings(SettingsModel):

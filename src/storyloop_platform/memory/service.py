@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from datetime import datetime, timezone
+from dataclasses import asdict
 
 from storyloop_harness.telemetry import Telemetry, session_id_for_game
 from storyloop_platform.lifecycle import OperationSupervisor, finish_on_cancel
 from storyloop_platform.memory.jobs import MemoryBatch, PlayerMemoryJobs
+from storyloop_platform.memory.policy import MemoryRecord, classify, select_preferences, snapshot_record
 from storyloop_platform.memory.providers import PlayerMemory
 
 
 class PlayerMemoryService:
     def __init__(self, provider: PlayerMemory | None, jobs: PlayerMemoryJobs,
-                 enabled: bool, telemetry: Telemetry, operations: OperationSupervisor) -> None:
+                 enabled: bool, telemetry: Telemetry, operations: OperationSupervisor, *,
+                 generated_preference_max_age_days: int | None = 90,
+                 utc_now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self.operations = operations
         self._stop_requested = False
         self._worker_active = False
@@ -21,7 +27,9 @@ class PlayerMemoryService:
         self.jobs = jobs
         self.enabled = enabled
         self.telemetry = telemetry
-        self._profile_cache: dict[str, tuple[str, ...]] = {}
+        self.generated_preference_max_age_days = generated_preference_max_age_days
+        self._utc_now = utc_now
+        self._profile_cache: dict[str, tuple[MemoryRecord, ...]] = {}
         self._profile_epochs: dict[str, int] = {}
         self._collection_epochs: dict[str, int] = {}
         self._memory_access = asyncio.Lock()
@@ -44,9 +52,16 @@ class PlayerMemoryService:
         memories = (await self.operations.run_blocking(
                         lambda: self.provider.list_memories(player_id), name="memory-list")
                     if self.provider is not None else [])
-        return {"available": available, "enabled": enabled, "memories": memories,
+        now = self._utc_now()
+        annotated = []
+        for row in memories:
+            record = snapshot_record(row)
+            annotated.append(asdict(record) | asdict(classify(
+                record, self.generated_preference_max_age_days, now)))
+        return {"available": available, "enabled": enabled, "memories": annotated,
                 "queued_inputs": self.jobs.pending_count(player_id),
                 "batch_size": 6, "min_interval_hours": 12,
+                "generated_preference_max_age_days": self.generated_preference_max_age_days,
                 "charged_points": 0}
 
     async def set_enabled(self, player_id: str, enabled: bool) -> dict:
@@ -120,17 +135,19 @@ class PlayerMemoryService:
         if not self.enabled or self.provider is None or not self.jobs.enabled(player_id):
             return ()
         if player_id in self._profile_cache:
-            return self._profile_cache[player_id]
+            return select_preferences(self._profile_cache[player_id],
+                                      self.generated_preference_max_age_days, self._utc_now())
         epoch = self._profile_epochs.get(player_id, 0)
         try:
             rows = await self.operations.run_blocking(
                 lambda: self.provider.list_memories(player_id), name="memory-list")
-            result = tuple(row["text"][:180] for row in rows[:8])
+            result = tuple(snapshot_record(row) for row in rows[:20])
             if (epoch != self._profile_epochs.get(player_id, 0)
                     or not self.enabled or not self.jobs.enabled(player_id)):
                 return ()
             self._profile_cache[player_id] = result
-            return result
+            return select_preferences(result, self.generated_preference_max_age_days,
+                                      self._utc_now())
         except Exception:
             logging.getLogger(__name__).exception("player profile read failed")
             return ()

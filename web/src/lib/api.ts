@@ -152,7 +152,9 @@ export type Session = { player_id: string; roles: string[]; capabilities: string
 export type PlayerMemoryStatus = {
   available: boolean;
   enabled: boolean;
-  memories: { id: string; text: string; created_at: string; updated_at: string; source: string }[];
+  memories: { id: string; text: string; created_at: string; updated_at: string; source: string;
+    freshness: "current" | "expired" | "unknown"; expires_at: string | null }[];
+  generated_preference_max_age_days: number | null;
   queued_inputs: number;
   batch_size: number;
   min_interval_hours: number;

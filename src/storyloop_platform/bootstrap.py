@@ -95,7 +95,9 @@ def build_portal(
         if provider is not None:
             closers.insert(1, provider.close)
         memory_service = PlayerMemoryService(provider, SQLPlayerMemoryJobs(engine),
-                                             resources.player_memory_enabled(), telemetry, operations)
+                                             resources.player_memory_enabled(), telemetry, operations,
+                                             generated_preference_max_age_days=(
+                                                 settings.player_memory.generated_preference_max_age_days))
         if provider is not None:
             closers[1] = memory_service.close
         else:
