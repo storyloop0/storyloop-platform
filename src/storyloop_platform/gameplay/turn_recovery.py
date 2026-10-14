@@ -52,7 +52,8 @@ def validate_scene_usage(inspection, context: TurnRecoveryContext) -> list:
 
 def inspect_scene(*, store, factory, contexts, game_id: str, request_id: str,
                   input_hash: str, item, package: ScenarioPackage,
-                  context: TurnRecoveryContext) -> RecoveryQualification:
+                  context: TurnRecoveryContext,
+                  plan: SceneRecoveryPlan | None = None) -> RecoveryQualification:
     if context.input_hash != input_hash:
         return RecoveryQualification("INPUT_MISMATCH")
     if not contexts.is_latest(game_id, request_id):
@@ -69,10 +70,11 @@ def inspect_scene(*, store, factory, contexts, game_id: str, request_id: str,
             return RecoveryQualification("LATER_REQUEST")
     if not isinstance(factory, SceneRecoveryRuntime):
         return RecoveryQualification("CONFIG_CHANGED")
-    try:
-        plan = factory.scene_recovery_plan(item, package, game_id)
-    except ValueError:
-        return RecoveryQualification("CONFIG_CHANGED")
+    if plan is None:
+        try:
+            plan = factory.scene_recovery_plan(item, package, game_id)
+        except ValueError:
+            return RecoveryQualification("CONFIG_CHANGED")
     if plan is None or plan.generation_identity != context.generation_identity:
         return RecoveryQualification("CONFIG_CHANGED")
     engine = factory.scene_recovery_engine(item, package, game_id, plan=plan, recovery_only=True)

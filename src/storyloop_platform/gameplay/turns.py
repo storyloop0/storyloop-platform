@@ -68,6 +68,8 @@ class TurnExecutionService:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", request_id) or not re.fullmatch(r"[0-9a-f]{64}", input_hash):
             raise ValueError("invalid recovery status parameters")
         try:
+            require_supported_save(self.store, game_id)
+            item = self.game_access.verified_listing(record)
             receipt = self.accounts.get_turn_response_by_hash(game_id, request_id, input_hash)
             if receipt is not None:
                 return RecoveryQualification("RECEIPT_READY" if valid_cached_view(receipt)
@@ -85,7 +87,6 @@ class TurnExecutionService:
                 ):
                     return RecoveryQualification("LEGACY_REQUEST").status(request_id)
                 return RecoveryQualification("NO_SNAPSHOT").status(request_id)
-            item = self.game_access.verified_listing(record)
             mode = record.play_mode or item.mode
             if (mode != "freeform" or self.moderation.preview_for(game_id, player_id) is not None):
                 return RecoveryQualification("UNSUPPORTED").status(request_id)
@@ -139,7 +140,6 @@ class TurnExecutionService:
                 return await self._controlled_turn(player_id, game_id, text, request_id,
                                                    progress, item, package, plan, memory_epoch)
         turn_id = f"portal-{request_id}"
-        progress_state = self.store.load(game_id).data.get("story_progress", {})
         committed_same_turn = any(self.store.event_exists(game_id, f"{turn_id}:{kind}")
                                   for kind in ("input", "query", "action", "continue",
                                                "choice", "advance", "completed"))
@@ -147,9 +147,7 @@ class TurnExecutionService:
             # Until model-call journaling exists, earlier interrupted turns cannot
             # be reconstructed with a fresh (empty) usage collector and billed as zero.
             raise TurnRecoveryRequired("行动已提交，但计量恢复记录不完整，请联系管理员恢复此回合。")
-        if (isinstance(progress_state, dict) and progress_state.get("complete") is True
-                and not committed_same_turn):
-            raise TurnInputError("this story is complete")
+        self._require_story_open(game_id, committed_same_turn)
         if preview and self.moderation.preview_turn_count(game_id) >= 12:
             raise ValueError("review preview has reached its 12-turn limit")
         if self.billing is not None and not preview:
@@ -246,12 +244,18 @@ class TurnExecutionService:
                 self.store.event_exists(game_id, f"{turn_id}:{kind}") for kind in
                 ("input", "query", "action", "continue", "choice", "advance", "completed"))):
             raise TurnRecoveryRequired("行动已有旧版恢复记录，无法安全恢复。")
+        if existing_scene is None:
+            committed_same_turn = any(self.store.event_exists(game_id, f"{turn_id}:{kind}")
+                                      for kind in ("input", "query", "action", "continue",
+                                                   "choice", "advance", "completed"))
+            self._require_story_open(game_id, committed_same_turn)
         if context is not None:
             try:
                 qualified = inspect_scene(store=self.store, factory=self.factory,
                                           contexts=self.recovery_contexts, game_id=game_id,
                                           request_id=request_id, input_hash=input_hash,
-                                          item=item, package=package, context=context)
+                                          item=item, package=package, context=context,
+                                          plan=plan)
             except ValueError as error:
                 raise TurnRecoveryRequired("行动恢复证据无效，请联系管理员恢复。") from error
             if qualified.reason not in ("SCENE_READY", "NO_SNAPSHOT"):
@@ -296,6 +300,9 @@ class TurnExecutionService:
                         scene_usage = validate_scene_usage(inspection, context)
                     except ValueError as error:
                         raise TurnRecoveryRequired("场景计量证据不完整，无法结算。") from error
+                    if (outcome.model_usage if recovery_only else
+                            tuple(outcome.model_usage) != tuple(scene_usage)):
+                        raise TurnRecoveryRequired("场景内出现未覆盖的模型计量，无法结算。")
                     snapshot = self.store.load(game_id)
                     base_ids = set(context.base_visible_observation_ids)
                     visible = [observation for observation in self.store.observations_for(game_id, "player")
@@ -334,6 +341,12 @@ class TurnExecutionService:
             self.memory_service.queue_input(player_id, game_id, request_id, text,
                                             expected_epoch=memory_epoch)
         return view
+
+    def _require_story_open(self, game_id: str, committed_same_turn: bool) -> None:
+        progress_state = self.store.load(game_id).data.get("story_progress", {})
+        if (isinstance(progress_state, dict) and progress_state.get("complete") is True
+                and not committed_same_turn):
+            raise TurnInputError("this story is complete")
 
     def _settle_prepared_turn(self, player_id: str, game_id: str, request_id: str,
                               player_text: str, item: GameListing, prepared: TurnSettlement,

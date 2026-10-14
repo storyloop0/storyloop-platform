@@ -16,6 +16,8 @@ from storyloop_platform.config import load_settings
 from storyloop_platform.portal.http_api import create_app
 from storyloop_platform.portal.billing import record_model_usage
 from storyloop_platform.runtime.guidance import GuidanceAdvisor
+from storyloop_harness.advanced import PendingWork
+from storyloop_platform.portal.turn_errors import TurnInputError
 from test_generation_budget_integration import _completion
 from test_turn_failure_contract import ROOT, portal
 from test_turn_settlement_recovery import completed_session
@@ -104,6 +106,82 @@ def test_native_fresh_turn_freezes_before_one_sdk_send_and_bills_saved_usage(nat
     assert len(sends) == 1
     assert result["billing"]["input_tokens"] == 1200
     assert result["billing"]["model_calls"] == 1
+
+
+def test_native_failed_attempt_fallback_bills_only_saved_success(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token = portal.register("fallback-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+
+    def first_invalid_then_valid(arguments, **kwargs):
+        if len(sends) == 1:
+            return _original_completion("{}", prompt_tokens=1000, completion_tokens=500)
+        return _original_completion(arguments, prompt_tokens=1200, completion_tokens=600)
+
+    monkeypatch.setattr(__import__(__name__), "_completion", first_invalid_then_valid)
+    result = asyncio.run(portal.turn(token, game_id, "look", "fallback"))
+    audit = portal.turns.audits.list_for_request(game_id, "fallback")[0]
+    assert len(sends) == 2
+    assert [attempt["outcome"] for attempt in audit["attempts"]] == ["failed", "succeeded"]
+    assert audit["summary"]["known_input_tokens"] == 2200
+    assert result["billing"]["model_calls"] == 1
+    assert result["billing"]["input_tokens"] == 1200
+
+
+def test_completed_native_story_rejects_new_request_before_context_or_model(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token = portal.register("complete-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    original_load = portal.gameplay.store.load
+    before = original_load(game_id)
+    monkeypatch.setattr(portal.gameplay.store, "load", lambda key: replace(
+        original_load(key), data={**original_load(key).data,
+                                  "story_progress": {"complete": True}}))
+    with pytest.raises(TurnInputError, match="this story is complete"):
+        asyncio.run(portal.turn(token, game_id, "continue", "after-end"))
+    assert sends == []
+    assert portal.turns.recovery_contexts.get(game_id, "after-end") is None
+    assert portal.turns.audits.list_for_request(game_id, "after-end") == []
+    assert original_load(game_id) == before
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_status_positive_proof_requires_current_content_access(native_portal, monkeypatch, prepared):
+    portal, _ = native_portal
+    token = portal.register("access-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    if prepared:
+        monkeypatch.setattr(portal.billing, "settle_turn",
+                            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+        with pytest.raises(RuntimeError, match="offline"):
+            asyncio.run(portal.turn(token, game_id, "look", "access"))
+    else:
+        asyncio.run(portal.turn(token, game_id, "look", "access"))
+    monkeypatch.setattr(portal.turns.game_access, "verified_listing",
+                        lambda record: (_ for _ in ()).throw(ValueError("package changed")))
+    status = portal.turn_recovery_status(token, game_id, "access", hashlib.sha256(b"look").hexdigest())
+    assert status["can_recover"] is False
+    assert status["reason_code"] != ("PREPARED_READY" if prepared else "RECEIPT_READY")
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_status_positive_proof_rejects_unsupported_pending_work(native_portal, monkeypatch, prepared):
+    portal, _ = native_portal
+    token = portal.register("legacy-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    if prepared:
+        monkeypatch.setattr(portal.billing, "settle_turn",
+                            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+        with pytest.raises(RuntimeError, match="offline"):
+            asyncio.run(portal.turn(token, game_id, "look", "legacy"))
+    else:
+        asyncio.run(portal.turn(token, game_id, "look", "legacy"))
+    before = portal.gameplay.store.load(game_id)
+    work = PendingWork("obsolete", "npc_reply", before.tick + 100, 10, None, {})
+    portal.gameplay.store.commit(game_id, before.version, None, (), (work,))
+    status = portal.turn_recovery_status(token, game_id, "legacy", hashlib.sha256(b"look").hexdigest())
+    assert status["can_recover"] is False
+    assert status["reason_code"] != ("PREPARED_READY" if prepared else "RECEIPT_READY")
 
 
 def test_saved_scene_recovers_without_a_second_send_or_repricing(native_portal, monkeypatch):
@@ -402,4 +480,103 @@ def test_identical_extra_usage_outside_scene_cannot_be_billed(native_portal, mon
         asyncio.run(portal.turn(token, game_id, "look", "extra"))
     assert portal.gameplay.store.generated_scene_snapshot(game_id, "portal-extra") is not None
     assert portal.accounts.get_turn_response(game_id, "extra", "look") is None
+    assert len(sends) == 1
+
+
+def test_identical_extra_usage_inside_engine_after_scene_save_is_rejected(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token = portal.register("nested-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    original_factory = portal.gameplay.factory.scene_recovery_engine
+
+    def engine_with_extra_call(*args, **kwargs):
+        engine = original_factory(*args, **kwargs)
+        original_run = engine.session.run_turn
+
+        async def run_with_extra(*run_args, **run_kwargs):
+            result = await original_run(*run_args, **run_kwargs)
+            assert portal.gameplay.store.generated_scene_snapshot(game_id, "portal-nested") is not None
+            async with OpenAIAsyncClient(api_key="offline-test",
+                                         base_url="https://offline.invalid/v1") as client:
+                response = await client.chat.completions.create(
+                    model="deepseek-v4.1-flash",
+                    messages=[{"role": "user", "content": "extra after saved scene"}])
+            record_model_usage("deepseek-v4.1-flash", "single_turn", SimpleNamespace(
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens, metadata={}))
+            return result
+
+        engine.session.run_turn = run_with_extra
+        return engine
+
+    monkeypatch.setattr(portal.gameplay.factory, "scene_recovery_engine", engine_with_extra_call)
+    with pytest.raises(ValueError, match="未覆盖"):
+        asyncio.run(portal.turn(token, game_id, "look", "nested"))
+    assert portal.accounts.get_turn_response(game_id, "nested", "look") is None
+    assert portal.turns.settlements.get(game_id, "nested", "look") is None
+    assert len(sends) == 2
+
+
+def test_recovery_rejects_new_nested_usage_even_with_saved_scene(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token = portal.register("resume-usage-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    original_prepare = portal.turns.settlements.prepare
+    monkeypatch.setattr(portal.turns.settlements, "prepare",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    with pytest.raises(RuntimeError, match="offline"):
+        asyncio.run(portal.turn(token, game_id, "look", "resume-usage"))
+    monkeypatch.setattr(portal.turns.settlements, "prepare", original_prepare)
+    original_factory = portal.gameplay.factory.scene_recovery_engine
+
+    def engine_with_unexpected_usage(*args, **kwargs):
+        engine = original_factory(*args, **kwargs)
+        original_run = engine.session.run_turn
+
+        async def run_with_usage(*run_args, **run_kwargs):
+            result = await original_run(*run_args, **run_kwargs)
+            record_model_usage("deepseek-v4.1-flash", "single_turn", SimpleNamespace(
+                input_tokens=1200, output_tokens=600, metadata={}))
+            return result
+
+        engine.session.run_turn = run_with_usage
+        return engine
+
+    monkeypatch.setattr(portal.gameplay.factory, "scene_recovery_engine", engine_with_unexpected_usage)
+    with pytest.raises(ValueError, match="未覆盖"):
+        asyncio.run(portal.turn(token, game_id, "look", "resume-usage"))
+    assert portal.turns.settlements.get(game_id, "resume-usage", "look") is None
+    assert len(sends) == 1
+
+
+def test_existing_context_uses_one_captured_recovery_plan(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token = portal.register("plan-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    original_plan = portal.gameplay.factory.scene_recovery_plan
+    original_factory = portal.gameplay.factory.scene_recovery_engine
+    original_prepare = portal.turns.settlements.prepare
+    monkeypatch.setattr(portal.turns.settlements, "prepare",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    with pytest.raises(RuntimeError, match="offline"):
+        asyncio.run(portal.turn(token, game_id, "look", "one-plan"))
+    monkeypatch.setattr(portal.turns.settlements, "prepare", original_prepare)
+    plans = []
+    assembled = []
+
+    def captured_plan(*args):
+        plan = original_plan(*args)
+        plans.append(plan)
+        return plan if len(plans) == 1 else replace(plan, generation_identity="0" * 64)
+
+    def capture_engine(*args, **kwargs):
+        assembled.append(kwargs["plan"])
+        return original_factory(*args, **kwargs)
+
+    monkeypatch.setattr(portal.gameplay.factory, "scene_recovery_plan", captured_plan)
+    monkeypatch.setattr(portal.gameplay.factory, "scene_recovery_engine", capture_engine)
+    result = asyncio.run(portal.turn(token, game_id, "look", "one-plan"))
+    assert result["billing"]["model_calls"] == 1
+    assert len(plans) == 1
+    assert all(plan is plans[0] for plan in assembled)
     assert len(sends) == 1
