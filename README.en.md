@@ -220,7 +220,9 @@ Local launch selection is `--catalog`, then `STORY_CATALOG`, then the remembered
 
 `player_memory.generated_preference_max_age_days` defaults to 90. Automatic preferences leave prompts at 90 actual UTC days after creation but remain visible, editable and deletable. User corrections remain effective; missing, malformed, naive or future automatic timestamps show unknown and stay out of prompts. Explicit `null` disables date filtering. The read-only policy filters the existing maximum 20 candidates before selecting up to 8; it neither adds embedding calls nor deletes Mem0 records.
 
-Platform includes SQL storage and migration for generated-scene snapshots while player and preview recovery remain disabled. Settlement recovery using historical usage and frozen rates is a later step.
+The native ordinary freeform interactive runtime freezes billing mode, rates and the visible-observation boundary before model work, then saves the successful scene before world commit. After failure or reload, the web app can manually recover using the retained original request ID and input: reuse the scene, finish persisted work and settle the original success usage once at the original rates. Recovery creates no story model client and does not requeue old input for preference extraction. Read-only status lookup uses the input SHA-256 and enables the button only for confirmed recovery evidence.
+
+This covers the latest ordinary interactive request without a story blueprint. Interruption before scene save may repeat generation. Legacy records, corrupt or changed configuration, unknown billable usage and missing original rates require manual handling. Campaigns, blueprints, previews, full failed-attempt fees and multiworker claims are outside this recovery scope.
 
 <details>
 <summary>Service composition and shutdown lifecycle</summary>
@@ -286,7 +288,7 @@ deploy/ecs/             Docker Compose deployment resources
 
 ## Current limitations
 
-The project is in incubation; APIs, settings, and storage formats may change. Use a single API worker: settlement snapshots support completed-turn recovery, but recovery across processes or multiple workers is not guaranteed. Character perspectives share one generation model and provide no hard information isolation. Request budgets are heuristic estimates for ordinary scene generation. Offline tests do not establish live narrative quality or production reliability.
+The project is in incubation; APIs, settings, and storage formats may change. Use a single API worker: eligible ordinary scenes support manual recovery across processes, while other modes and concurrent multiworker recovery remain outside the covered scope. Character perspectives share one generation model and provide no hard information isolation. Request budgets are heuristic estimates for ordinary scene generation. Offline tests do not establish live narrative quality or production reliability.
 
 <details>
 <summary>Context budgets and developer inspection</summary>
