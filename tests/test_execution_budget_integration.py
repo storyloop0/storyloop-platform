@@ -6,11 +6,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from storyloop_harness.generation import (
-    ExecutionBudget, ExecutionRequestLimitExceeded, ExecutionTimeout,
+    ExecutionBudget, ExecutionRequestLimitExceeded, ExecutionTimeout, Msg,
 )
 from storyloop_harness import ScenarioPackage
 from storyloop_harness.advanced import SceneContext, Snapshot, StorySegment
@@ -25,7 +26,7 @@ from storyloop_platform.runtime.guidance import GuidanceAdvisor
 from storyloop_platform.adapters.store import SQLiteGameStore
 from test_turn_failure_contract import portal
 from test_attempt_audit_integration import sdk_model
-from test_generation_budget_integration import _completion
+from test_generation_budget_integration import _completion, Decision
 
 
 def test_runtime_defaults_and_overrides():
@@ -90,6 +91,41 @@ def test_turn_scope_limits_actual_sdk_posts_before_world_commit(portal, monkeypa
     asyncio.run(run())
     assert len(requests) == 1
     assert not portal.gameplay.store.event_exists(game, "portal-execution-limit:input")
+
+
+def test_one_turn_shares_six_actual_posts_across_engine_and_guidance(portal, monkeypatch):
+    requests = []
+
+    def reply(request):
+        requests.append(request)
+        # The scene generation uses its full local three-send allowance before
+        # guidance starts, then guidance consumes the remaining three sends.
+        return _completion("{}" if len(requests) <= 2 else '{"prose":"A quiet harbor."}')
+
+    model, transport = sdk_model(monkeypatch, reply)
+    portal.gameplay.factory.offline_models.model = model
+    player = portal.register("reader", "password-123")
+    game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
+
+    async def guidance(*args, **kwargs):
+        for _ in range(4):
+            await model([Msg("player", "offline guidance", "user")], structured_model=Decision)
+        raise AssertionError("the seventh send must not return")
+
+    monkeypatch.setattr(GuidanceAdvisor, "advise", guidance)
+
+    async def run():
+        try:
+            with pytest.raises(ExecutionRequestLimitExceeded):
+                await portal.turn(player["token"], game, "Hello", "six-posts")
+        finally:
+            await model.client.close()
+            await transport.aclose()
+
+    asyncio.run(run())
+    assert len(requests) == 6
+    assert portal.gameplay.store.event_exists(game, "portal-six-posts:input")
+    assert portal.accounts.get_turn_response(game, "six-posts", "Hello") is None
 
 
 @pytest.mark.parametrize("error_type", [ExecutionRequestLimitExceeded, ExecutionTimeout])
@@ -209,6 +245,42 @@ def test_scope_starts_after_preferences_and_ends_after_view(portal, monkeypatch)
 
     asyncio.run(run())
     assert seen == [("preferences", True), ("view", True), ("prepare", True)]
+
+
+def test_disconnected_stream_operation_still_reaches_execution_deadline(portal):
+    from storyloop_harness.testing import OfflineModel
+
+    entered = asyncio.Event()
+
+    class StalledModel(OfflineModel):
+        async def __call__(self, *args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+    portal.turns.execution_budget = ExecutionBudget(6, 0.15)
+    portal.gameplay.factory.offline_models.model = StalledModel()
+
+    async def run():
+        player = portal.register("reader", "password-123")
+        game = (await portal.create_save(player["token"], "npc-chat"))["game_id"]
+        app = create_app(portal)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                     base_url="http://127.0.0.1") as client:
+            request = asyncio.create_task(client.post(
+                f"/v1/saves/{game}/turns/stream",
+                headers={"Authorization": f"Bearer {player['token']}"},
+                json={"text": "Hello", "request_id": "stream-disconnect"}))
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            await asyncio.sleep(0.25)
+            portal.operations.assert_drained()
+        rows = portal.turns.audits.list_for_request(game, "stream-disconnect")
+        assert rows[0]["outcome"] == "failed"
+        assert rows[0]["error_type"] == "ExecutionTimeout"
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("error,code,message", [
