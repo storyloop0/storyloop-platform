@@ -76,8 +76,8 @@ class TurnExecutionService:
                                              else "EVIDENCE_INVALID").status(request_id)
             prepared = self.settlements.get_by_hash(game_id, request_id, input_hash)
             if prepared is not None:
-                return RecoveryQualification("PREPARED_READY" if valid_cached_view(prepared.response)
-                                             else "EVIDENCE_INVALID").status(request_id)
+                self._qualify_prepared(player_id, game_id, request_id, input_hash, prepared)
+                return RecoveryQualification("PREPARED_READY").status(request_id)
             context = self.recovery_contexts.get(game_id, request_id)
             turn_id = "portal-" + request_id
             if context is None:
@@ -129,6 +129,8 @@ class TurnExecutionService:
         memory_epoch = self.memory_service.collection_epoch(player_id)
         prepared = self.settlements.get(game_id, request_id, text)
         if prepared is not None:
+            self._qualify_prepared(player_id, game_id, request_id,
+                                   sha256(text.encode()).hexdigest(), prepared)
             return self._settle_prepared_turn(player_id, game_id, request_id, text, item,
                                               prepared, memory_epoch)
         package = package_for_mode(ScenarioPackage.load(item.package_path), mode)
@@ -228,6 +230,36 @@ class TurnExecutionService:
             self.memory_service.queue_input(player_id, game_id, request_id, text,
                                             expected_epoch=memory_epoch)
         return view
+
+    def _qualify_prepared(self, player_id: str, game_id: str, request_id: str,
+                          input_hash: str, prepared: TurnSettlement) -> None:
+        """Check finished settlement evidence without consulting today's generation setup."""
+        if not valid_cached_view(prepared.response):
+            raise TurnRecoveryRequired("保存的回合响应无效，请联系管理员恢复。")
+        try:
+            context = self.recovery_contexts.get(game_id, request_id)
+            if context is None:
+                return  # Older prepared rows have no controlled-scene context.
+            if (context.player_id != player_id or context.game_id != game_id or
+                    context.request_id != request_id or context.turn_id != "portal-" + request_id or
+                    context.input_hash != input_hash or not context.billing_enabled or
+                    prepared.policy != context.policy()):
+                raise ValueError("prepared context does not match original billing")
+            scene = self.store.generated_scene_snapshot(game_id, context.turn_id)
+            if scene is None:
+                raise ValueError("prepared scene is missing")
+            metadata = scene.metadata()
+            if (scene.game_id != game_id or scene.turn_id != context.turn_id or
+                    metadata["input_hash"] != input_hash or
+                    metadata["base_version"] != context.base_version or
+                    metadata["base_tick"] != context.base_tick or
+                    metadata["base_state_hash"] != context.base_state_hash or
+                    metadata["usage_coverage"] != "reported" or
+                    tuple(prepared.usage) != scene.success_usage()):
+                raise ValueError("prepared scene does not match original usage")
+            context.policy().price_milli_points(prepared.usage)
+        except ValueError as error:
+            raise TurnRecoveryRequired("保存的结算证据无效，请联系管理员恢复。") from error
 
     async def _controlled_turn(self, player_id: str, game_id: str, text: str,
                                request_id: str, progress: TurnProgress | None,

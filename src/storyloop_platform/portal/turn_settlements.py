@@ -49,6 +49,7 @@ class SQLTurnSettlements:
             if not isinstance(response, dict):
                 raise ValueError("invalid response")
             usage = [ModelUsage(**item) for item in json.loads(row["usage_json"])]
+            policy.price_milli_points(usage)
         except (ValueError, TypeError, KeyError) as error:
             raise TurnRecoveryRequired("回合计量记录不完整，请联系管理员恢复。") from error
         return TurnSettlement(response, usage, policy)

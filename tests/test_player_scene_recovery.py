@@ -2,9 +2,11 @@
 
 import asyncio
 import hashlib
+import json
 from dataclasses import replace
 
 import pytest
+from sqlalchemy import text as sql_text
 from fastapi.testclient import TestClient
 from httpx2 import AsyncClient as HttpAsyncClient, MockTransport, Response
 from openai import AsyncClient as OpenAIAsyncClient
@@ -15,6 +17,7 @@ from storyloop_platform.bootstrap import build_portal
 from storyloop_platform.config import load_settings
 from storyloop_platform.portal.http_api import create_app
 from storyloop_platform.portal.billing import record_model_usage
+from storyloop_platform.portal.turn_errors import TurnRecoveryRequired
 from storyloop_platform.runtime.guidance import GuidanceAdvisor
 from storyloop_harness.advanced import PendingWork
 from storyloop_platform.portal.turn_errors import TurnInputError
@@ -106,6 +109,132 @@ def test_native_fresh_turn_freezes_before_one_sdk_send_and_bills_saved_usage(nat
     assert len(sends) == 1
     assert result["billing"]["input_tokens"] == 1200
     assert result["billing"]["model_calls"] == 1
+
+
+@pytest.mark.parametrize("damage", ["missing_price", "different_price", "empty_usage",
+                                    "different_usage", "missing_scene", "corrupt_scene"])
+def test_controlled_prepared_requires_original_scene_and_terms(native_portal, monkeypatch, damage):
+    portal, sends = native_portal
+    token = portal.register("prepared-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    monkeypatch.setattr(portal.billing, "settle_turn",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    with pytest.raises(RuntimeError, match="offline"):
+        asyncio.run(portal.turn(token, game_id, "look", "prepared"))
+    with portal.accounts.engine.begin() as db:
+        if damage in ("missing_price", "different_price"):
+            raw = json.loads(db.execute(sql_text("SELECT policy_json FROM turn_settlement_intents WHERE game_id=:game"),
+                                        {"game": game_id}).scalar_one())
+            if damage == "missing_price":
+                raw["models"] = {}
+            else:
+                raw["models"][next(iter(raw["models"]))]["input_rmb_per_million"] = "999"
+            db.execute(sql_text("UPDATE turn_settlement_intents SET policy_json=:raw WHERE game_id=:game"),
+                       {"raw": json.dumps(raw), "game": game_id})
+        elif damage in ("empty_usage", "different_usage"):
+            raw = [] if damage == "empty_usage" else [{**portal.turns.settlements.get(
+                game_id, "prepared", "look").usage[0].to_dict(), "input_tokens": 1}]
+            db.execute(sql_text("UPDATE turn_settlement_intents SET usage_json=:raw WHERE game_id=:game"),
+                       {"raw": json.dumps(raw), "game": game_id})
+        elif damage == "missing_scene":
+            db.execute(sql_text("DELETE FROM generated_scene_snapshots WHERE game_id=:game"), {"game": game_id})
+        else:
+            db.execute(sql_text("UPDATE generated_scene_snapshots SET checksum=:bad WHERE game_id=:game"),
+                       {"bad": "0" * 64, "game": game_id})
+    before = len(portal.credit_ledger(token))
+    with portal.accounts.engine.connect() as db:
+        receipts_before = db.execute(sql_text(
+            "SELECT COUNT(*) FROM portal_turns WHERE game_id=:game"), {"game": game_id}).scalar_one()
+    status = portal.turn_recovery_status(token, game_id, "prepared", hashlib.sha256(b"look").hexdigest())
+    assert status == dict(request_id="prepared", status="blocked", can_recover=False,
+                          reason_code="EVIDENCE_INVALID")
+    with pytest.raises(TurnRecoveryRequired):
+        asyncio.run(portal.turn(token, game_id, "look", "prepared"))
+    assert len(portal.credit_ledger(token)) == before
+    with portal.accounts.engine.connect() as db:
+        assert db.execute(sql_text(
+            "SELECT COUNT(*) FROM portal_turns WHERE game_id=:game"), {"game": game_id}).scalar_one() == receipts_before
+    assert len(sends) == 1
+
+
+def test_free_controlled_context_rejects_inserted_paid_preparation(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token = portal.register("free-prepared-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    paid_policy = portal.billing.policy
+    portal.turns.billing = None
+    captured = []
+
+    def disconnected(*args):
+        captured.append(args[-1])
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(portal.accounts, "store_turn_response", disconnected)
+    with pytest.raises(RuntimeError, match="offline"):
+        asyncio.run(portal.turn(token, game_id, "look", "free-prepared"))
+    scene = portal.gameplay.store.generated_scene_snapshot(game_id, "portal-free-prepared")
+    portal.turns.settlements.prepare(game_id, "free-prepared", "look", captured[0],
+                                     list(scene.success_usage()), paid_policy)
+    assert portal.turn_recovery_status(token, game_id, "free-prepared",
+            hashlib.sha256(b"look").hexdigest())["reason_code"] == "EVIDENCE_INVALID"
+    with pytest.raises(TurnRecoveryRequired):
+        asyncio.run(portal.turn(token, game_id, "look", "free-prepared"))
+    assert len(sends) == 1
+    assert not any(row["kind"] == "turn" for row in portal.credit_ledger(token))
+
+
+def test_controlled_prepared_replays_after_later_turn_and_generation_change(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token = portal.register("prepared-control", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    original_settle = portal.billing.settle_turn
+    monkeypatch.setattr(portal.billing, "settle_turn",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    with pytest.raises(RuntimeError, match="offline"):
+        asyncio.run(portal.turn(token, game_id, "first", "first"))
+    monkeypatch.setattr(portal.billing, "settle_turn", original_settle)
+    asyncio.run(portal.turn(token, game_id, "second", "second"))
+    portal.turns.billing.policy = replace(portal.turns.billing.policy, pricing_version="later")
+    monkeypatch.setattr(portal.gameplay.factory, "scene_recovery_plan",
+                        lambda *args: (_ for _ in ()).throw(AssertionError("current plan accessed")))
+    assert portal.turn_recovery_status(token, game_id, "first",
+            hashlib.sha256(b"first").hexdigest())["reason_code"] == "PREPARED_READY"
+    result = asyncio.run(portal.turn(token, game_id, "first", "first"))
+    assert result["billing"]["input_tokens"] == 1200
+    assert len(sends) == 2
+
+
+def test_legacy_prepared_empty_usage_remains_replayable(portal):
+    token, game_id = _save(portal)
+    completed_session(portal)
+    response = asyncio.run(portal.turn(token, game_id, "reference", "reference"))
+    portal.turns.settlements.prepare(game_id, "legacy-empty", "old", response,
+                                     [], portal.billing.policy)
+    assert portal.turn_recovery_status(token, game_id, "legacy-empty",
+            hashlib.sha256(b"old").hexdigest())["reason_code"] == "PREPARED_READY"
+    result = asyncio.run(portal.turn(token, game_id, "old", "legacy-empty"))
+    assert result["billing"]["model_calls"] == 0
+
+
+def test_controlled_prepared_accepts_reported_zero_usage(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token = portal.register("zero-prepared-reader", "password-123")["token"]
+    game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+    monkeypatch.setattr(__import__(__name__), "_completion",
+                        lambda arguments, **kwargs: _original_completion(arguments,
+                            prompt_tokens=0, completion_tokens=0))
+    original_settle = portal.billing.settle_turn
+    monkeypatch.setattr(portal.billing, "settle_turn",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    with pytest.raises(RuntimeError, match="offline"):
+        asyncio.run(portal.turn(token, game_id, "zero", "zero-prepared"))
+    monkeypatch.setattr(portal.billing, "settle_turn", original_settle)
+    assert portal.turn_recovery_status(token, game_id, "zero-prepared",
+            hashlib.sha256(b"zero").hexdigest())["reason_code"] == "PREPARED_READY"
+    result = asyncio.run(portal.turn(token, game_id, "zero", "zero-prepared"))
+    assert result["billing"]["model_calls"] == 1
+    assert result["billing"]["charged_milli_points"] == 0
+    assert len(sends) == 1
 
 
 def test_native_failed_attempt_fallback_bills_only_saved_success(native_portal, monkeypatch):
@@ -202,8 +331,33 @@ def test_saved_scene_recovers_without_a_second_send_or_repricing(native_portal, 
                         lambda *args: (_ for _ in ()).throw(AssertionError("GET loaded credential")))
     monkeypatch.setattr(portal.memory_service, "preferences_for",
                         lambda *args: (_ for _ in ()).throw(AssertionError("GET loaded preferences")))
-    assert portal.turn_recovery_status(token, game_id, "scene",
-            hashlib.sha256(b"listen").hexdigest())["reason_code"] == "SCENE_READY"
+    tables = ("games", "events", "observations", "pending_work", "turn_recovery_contexts",
+              "generated_scene_snapshots", "model_execution_audits", "turn_settlement_intents",
+              "portal_turns", "credit_ledger")
+
+    def durable_rows():
+        with portal.accounts.engine.connect() as db:
+            rows = {table: tuple(db.execute(sql_text(
+                f"SELECT * FROM {table} WHERE game_id=:game"), {"game": game_id}).all())
+                    for table in tables}
+            rows["credit_wallets"] = tuple(db.execute(sql_text(
+                "SELECT * FROM credit_wallets WHERE player_id=:player"),
+                {"player": portal.accounts.resolve_token(token)}).all())
+            return rows
+
+    before = durable_rows()
+    with monkeypatch.context() as guarded:
+        def forbidden(*args, **kwargs):
+            raise AssertionError("SCENE_READY GET attempted a write")
+        guarded.setattr(portal.gameplay.store, "commit", forbidden)
+        guarded.setattr(portal.turns.audits, "start", forbidden)
+        guarded.setattr(portal.memory_service, "queue_input", forbidden)
+        guarded.setattr(portal.turns.settlements, "prepare", forbidden)
+        assert portal.turn_recovery_status(token, game_id, "scene",
+                hashlib.sha256(b"listen").hexdigest()) == dict(
+                    request_id="scene", status="recoverable", can_recover=True,
+                    reason_code="SCENE_READY")
+    assert durable_rows() == before
     monkeypatch.setattr(portal.gameplay.factory.models, "_credential", credential)
     monkeypatch.setattr(portal.turns.settlements, "prepare", original_prepare)
     frozen_policy = portal.turns.recovery_contexts.get(game_id, "scene").policy()
