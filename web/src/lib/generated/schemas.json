@@ -473,6 +473,174 @@
     "title": "TurnFailure",
     "type": "object"
   },
+  "TurnRecoveryStatus": {
+    "$defs": {
+      "BlockedTurnRecoveryStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "can_recover": {
+            "const": false,
+            "title": "Can Recover",
+            "type": "boolean"
+          },
+          "reason_code": {
+            "enum": [
+              "INPUT_MISMATCH",
+              "LATER_REQUEST",
+              "EVIDENCE_INVALID",
+              "CONFIG_CHANGED",
+              "USAGE_UNAVAILABLE",
+              "LEGACY_REQUEST"
+            ],
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "blocked",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "status",
+          "can_recover",
+          "reason_code"
+        ],
+        "title": "BlockedTurnRecoveryStatus",
+        "type": "object"
+      },
+      "CompleteTurnRecoveryStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "can_recover": {
+            "const": true,
+            "title": "Can Recover",
+            "type": "boolean"
+          },
+          "reason_code": {
+            "const": "RECEIPT_READY",
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "complete",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "status",
+          "can_recover",
+          "reason_code"
+        ],
+        "title": "CompleteTurnRecoveryStatus",
+        "type": "object"
+      },
+      "RecoverableTurnRecoveryStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "can_recover": {
+            "const": true,
+            "title": "Can Recover",
+            "type": "boolean"
+          },
+          "reason_code": {
+            "enum": [
+              "PREPARED_READY",
+              "SCENE_READY"
+            ],
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "recoverable",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "status",
+          "can_recover",
+          "reason_code"
+        ],
+        "title": "RecoverableTurnRecoveryStatus",
+        "type": "object"
+      },
+      "UnavailableTurnRecoveryStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "can_recover": {
+            "const": false,
+            "title": "Can Recover",
+            "type": "boolean"
+          },
+          "reason_code": {
+            "enum": [
+              "NO_SNAPSHOT",
+              "UNSUPPORTED"
+            ],
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "not_available",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "status",
+          "can_recover",
+          "reason_code"
+        ],
+        "title": "UnavailableTurnRecoveryStatus",
+        "type": "object"
+      }
+    },
+    "discriminator": {
+      "mapping": {
+        "blocked": "#/$defs/BlockedTurnRecoveryStatus",
+        "complete": "#/$defs/CompleteTurnRecoveryStatus",
+        "not_available": "#/$defs/UnavailableTurnRecoveryStatus",
+        "recoverable": "#/$defs/RecoverableTurnRecoveryStatus"
+      },
+      "propertyName": "status"
+    },
+    "oneOf": [
+      {
+        "$ref": "#/$defs/CompleteTurnRecoveryStatus"
+      },
+      {
+        "$ref": "#/$defs/RecoverableTurnRecoveryStatus"
+      },
+      {
+        "$ref": "#/$defs/BlockedTurnRecoveryStatus"
+      },
+      {
+        "$ref": "#/$defs/UnavailableTurnRecoveryStatus"
+      }
+    ]
+  },
   "TurnStreamEvent": {
     "$defs": {
       "ActionOption": {
