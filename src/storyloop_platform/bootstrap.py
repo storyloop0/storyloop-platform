@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from storyloop_harness import ScenarioPackage
+from storyloop_harness.generation import ExecutionBudget
 from storyloop_platform.adapters.telemetry import configured_telemetry
 from storyloop_platform.config import ModelFactory, PlatformResources, PlatformSettings
 from storyloop_platform.gameplay.access import GameAccess
@@ -134,7 +135,9 @@ def build_portal(
             store=store, accounts=accounts, game_access=game_access, moderation=moderation,
             settlements=settlements, billing=billing, billing_for_policy=billing_for_policy,
             memory_service=memory_service, factory=factory, player_locks=player_locks,
-            telemetry=telemetry, audits=SQLModelExecutionAudits(engine))
+            telemetry=telemetry, audits=SQLModelExecutionAudits(engine),
+            execution_budget=ExecutionBudget(settings.runtime.turn_max_requests,
+                                             settings.runtime.turn_timeout_seconds))
 
         def guarded_close() -> None:
             operations.close()

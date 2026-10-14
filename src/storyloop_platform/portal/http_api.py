@@ -13,7 +13,10 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
 from pydantic import BaseModel, Field, ValidationError
-from storyloop_harness.generation import GenerationRequestLimitExceeded, GenerationTimeout
+from storyloop_harness.generation import (
+    ExecutionRequestLimitExceeded, ExecutionTimeout,
+    GenerationRequestLimitExceeded, GenerationTimeout,
+)
 from starlette.middleware.cors import CORSMiddleware
 
 from storyloop_platform.api.contracts import History, TurnFailure, View, stream_event_adapter
@@ -591,7 +594,8 @@ def create_app(portal: PlayerPortal, *, operation_shutdown_timeout: float = GRAC
             return JSONResponse(status_code=500, content=failure_content({"detail": failure["message"], **failure}))
         except ServiceStopping:
             return JSONResponse(status_code=503, content=stopping_failure(body.request_id))
-        except (GenerationRequestLimitExceeded, GenerationTimeout) as error:
+        except (GenerationRequestLimitExceeded, GenerationTimeout,
+                ExecutionRequestLimitExceeded, ExecutionTimeout) as error:
             failure = turn_failure(error, body.request_id)
             return JSONResponse(status_code=503,
                                 content=failure_content({"detail": failure["message"], **failure}))
@@ -627,7 +631,8 @@ def create_app(portal: PlayerPortal, *, operation_shutdown_timeout: float = GRAC
                 try:
                     view = await portal.turn(auth, game_id, body.text, body.request_id, progress=report)
                     await report({"type": "complete", "view": view})
-                except (GenerationRequestLimitExceeded, GenerationTimeout) as error:
+                except (GenerationRequestLimitExceeded, GenerationTimeout,
+                        ExecutionRequestLimitExceeded, ExecutionTimeout) as error:
                     await report({"type": "error", **turn_failure(error, body.request_id)})
                 except (ValueError, KeyError, PermissionError) as error:
                     await report({"type": "error", **turn_failure(error, body.request_id)})

@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from storyloop_harness import GameStore, ScenarioPackage, TurnInput
 from storyloop_harness.advanced import segment_for_observation, TurnProgress, emit, StoryClock, player_preferences_scope
-from storyloop_harness.generation import ActionOption
+from storyloop_harness.generation import ActionOption, ExecutionBudget, execution_budget_scope
 from storyloop_harness.telemetry import Telemetry, session_id_for_game
 
 from storyloop_platform.gameplay.access import GameAccess, require_supported_save
@@ -38,6 +38,7 @@ class TurnExecutionService:
                  billing_for_policy: Callable[[BillingPolicy], SQLBillingRepository],
                  memory_service: PlayerMemoryService, factory: GameplayRuntime,
                  player_locks: PlayerTurnLocks, telemetry: Telemetry,
+                 execution_budget: ExecutionBudget,
                  audits: SQLModelExecutionAudits | None = None) -> None:
         self.store = store
         self.accounts = accounts
@@ -50,6 +51,7 @@ class TurnExecutionService:
         self.factory = factory
         self.player_locks = player_locks
         self.telemetry = telemetry
+        self.execution_budget = execution_budget
         self.audits = audits if audits is not None else SQLModelExecutionAudits(accounts.engine)
 
     async def turn(self, player_id: str, game_id: str, text: str,
@@ -101,66 +103,67 @@ class TurnExecutionService:
         engine_usage = ()
         with attempt_audit_scope(self.audits, player_id=player_id, game_id=game_id,
                                  request_id=request_id, player_text=text,
-                                 policy=self.billing.policy if self.billing is not None and not preview else None), \
-                context as meter, player_preferences_scope(preferences):
-            source_driven = package.story_blueprint is not None
-            recovered = (await self._recover_freeform(item, package, game_id, text, turn_id,
-                                                      mode)
-                         if mode == "freeform" or source_driven else None)
-            if recovered is not None:
-                view = recovered
-            elif mode == "campaign" and not source_driven:
-                program, session = self.factory.campaign(item, package, game_id)
-                single = session.turn_engine
-                outcome = await session.submit(game_id, text, turn_id, progress=progress)
-                engine_usage = outcome.model_usage
-                await emit(progress, "preview", body=outcome.text,
-                           segments=[part.to_dict() for part in outcome.segments])
-                snapshot = self.store.load(game_id)
-                await emit(progress, "stage", stage="guidance")
-                guidance = await GuidanceAdvisor(self.store, package, program,
-                                                 telemetry=self.telemetry,
-                                                 turns_per_story_tick=item.turns_per_story_tick).advise(
-                    game_id, snapshot, gate_id=outcome.gate_id,
-                    complete=outcome.complete, visible_text=outcome.text)
-                leads = program.current_action_context(snapshot).get("leads", [])
-                authored = tuple(ActionOption.model_validate(item) for item in leads)
-                action_options = (single.proposed_options(game_id, turn_id, authored)
-                                  if outcome.gate_id is None and not outcome.complete
-                                  else ())
-                view = turn_view(game_id, item.game_id, mode, outcome.text,
-                                  snapshot, guidance, complete=outcome.complete,
-                                  turn_id=turn_id, segments=outcome.segments,
-                                  program=program, gate_id=outcome.gate_id,
-                                  time_of_day=outcome.time_of_day,
-                                  presentation_mode=package.presentation_mode,
-                                  action_options=action_options,
-                                  status_fields=package.status_fields, time_unit=package.time_unit)
-            else:
-                turn_engine = (self.factory.engine(item, package, game_id,
-                                    overnight_requires_rest=True)
-                         if source_driven else self.factory.engine(item, package, game_id))
-                single = turn_engine
-                outcome = await turn_engine.run_turn(
-                    TurnInput(game_id, text, turn_id, package.version), progress=progress,
-                )
-                engine_usage = getattr(outcome, "model_usage", ())
-                body, segments = outcome.narration, outcome.segments
-                await emit(progress, "preview", body=body,
-                           segments=[part.to_dict() for part in segments])
-                await emit(progress, "stage", stage="guidance")
-                guidance = (GuidanceResult((), "source_story") if source_driven else
-                            await GuidanceAdvisor(self.store, package, telemetry=self.telemetry).advise(
-                                game_id, self.store.load(game_id), visible_text=body))
-                action_options = single.proposed_options(game_id, turn_id)
-                clock = (StoryClock(package.ticks_per_day * item.turns_per_story_tick)
-                         if package.ticks_per_day is not None else None)
-                view = turn_view(game_id, item.game_id, mode, body,
-                                  self.store.load(game_id), guidance, turn_id=turn_id,
-                                  segments=segments,
-                                  presentation_mode=package.presentation_mode,
-                                  action_options=action_options, clock=clock,
-                                  status_fields=package.status_fields, time_unit=package.time_unit)
+                                 policy=self.billing.policy if self.billing is not None and not preview else None):
+            async with execution_budget_scope(self.execution_budget):
+                with context as meter, player_preferences_scope(preferences):
+                    source_driven = package.story_blueprint is not None
+                    recovered = (await self._recover_freeform(item, package, game_id, text, turn_id,
+                                                              mode)
+                                 if mode == "freeform" or source_driven else None)
+                    if recovered is not None:
+                        view = recovered
+                    elif mode == "campaign" and not source_driven:
+                        program, session = self.factory.campaign(item, package, game_id)
+                        single = session.turn_engine
+                        outcome = await session.submit(game_id, text, turn_id, progress=progress)
+                        engine_usage = outcome.model_usage
+                        await emit(progress, "preview", body=outcome.text,
+                                   segments=[part.to_dict() for part in outcome.segments])
+                        snapshot = self.store.load(game_id)
+                        await emit(progress, "stage", stage="guidance")
+                        guidance = await GuidanceAdvisor(self.store, package, program,
+                                                         telemetry=self.telemetry,
+                                                         turns_per_story_tick=item.turns_per_story_tick).advise(
+                            game_id, snapshot, gate_id=outcome.gate_id,
+                            complete=outcome.complete, visible_text=outcome.text)
+                        leads = program.current_action_context(snapshot).get("leads", [])
+                        authored = tuple(ActionOption.model_validate(item) for item in leads)
+                        action_options = (single.proposed_options(game_id, turn_id, authored)
+                                          if outcome.gate_id is None and not outcome.complete
+                                          else ())
+                        view = turn_view(game_id, item.game_id, mode, outcome.text,
+                                          snapshot, guidance, complete=outcome.complete,
+                                          turn_id=turn_id, segments=outcome.segments,
+                                          program=program, gate_id=outcome.gate_id,
+                                          time_of_day=outcome.time_of_day,
+                                          presentation_mode=package.presentation_mode,
+                                          action_options=action_options,
+                                          status_fields=package.status_fields, time_unit=package.time_unit)
+                    else:
+                        turn_engine = (self.factory.engine(item, package, game_id,
+                                            overnight_requires_rest=True)
+                                 if source_driven else self.factory.engine(item, package, game_id))
+                        single = turn_engine
+                        outcome = await turn_engine.run_turn(
+                            TurnInput(game_id, text, turn_id, package.version), progress=progress,
+                        )
+                        engine_usage = getattr(outcome, "model_usage", ())
+                        body, segments = outcome.narration, outcome.segments
+                        await emit(progress, "preview", body=body,
+                                   segments=[part.to_dict() for part in segments])
+                        await emit(progress, "stage", stage="guidance")
+                        guidance = (GuidanceResult((), "source_story") if source_driven else
+                                    await GuidanceAdvisor(self.store, package, telemetry=self.telemetry).advise(
+                                        game_id, self.store.load(game_id), visible_text=body))
+                        action_options = single.proposed_options(game_id, turn_id)
+                        clock = (StoryClock(package.ticks_per_day * item.turns_per_story_tick)
+                                 if package.ticks_per_day is not None else None)
+                        view = turn_view(game_id, item.game_id, mode, body,
+                                          self.store.load(game_id), guidance, turn_id=turn_id,
+                                          segments=segments,
+                                          presentation_mode=package.presentation_mode,
+                                          action_options=action_options, clock=clock,
+                                          status_fields=package.status_fields, time_unit=package.time_unit)
         if self.billing is not None and not preview:
             prepared = self.settlements.prepare(game_id, request_id, text, view,
                                                      list(engine_usage) + meter.records, self.billing.policy)

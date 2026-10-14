@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from storyloop_harness.generation import ExecutionRequestLimitExceeded, ExecutionTimeout
+
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -107,6 +109,8 @@ class GuidanceAdvisor:
                         or any(not isinstance(item, str) or not item.strip() for item in items)):
                     raise ValueError("guidance provider returned no usable suggestions")
                 items = tuple(item.strip() for item in items[:2])
+            except (ExecutionRequestLimitExceeded, ExecutionTimeout):
+                raise
             except Exception:
                 items = await self.fallback.suggest(context)
                 source = "fallback"
