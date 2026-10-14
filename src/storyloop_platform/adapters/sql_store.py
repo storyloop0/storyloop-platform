@@ -11,6 +11,10 @@ from sqlalchemy.exc import IntegrityError
 
 from storyloop_harness.advanced import AgentContextCheckpoint, AgentContextEntry, Observation, PendingWork, PlayerInput, Snapshot, WorldEvent, validate_checkpoint
 from storyloop_harness.advanced import apply_event
+from storyloop_harness.core.generated_scene import (
+    GeneratedSceneConflict, GeneratedSceneCorrupt, GeneratedSceneSnapshot,
+    validate_event_snapshot_reference,
+)
 
 
 def _json(value: object) -> str:
@@ -70,6 +74,48 @@ class SQLGameStore:
                 {"game_id": game_id, "event_id": event_id}).first()
         return row is not None
 
+    @staticmethod
+    def _generated_scene_snapshot(db, game_id: str, turn_id: str) -> GeneratedSceneSnapshot | None:
+        row = db.execute(text("""SELECT snapshot_id,canonical_json,checksum
+            FROM generated_scene_snapshots WHERE game_id=:game_id AND turn_id=:turn_id"""),
+            {"game_id": game_id, "turn_id": turn_id}).mappings().first()
+        if row is None:
+            return None
+        record = GeneratedSceneSnapshot.from_storage(row["canonical_json"], row["checksum"])
+        if (record.snapshot_id, record.game_id, record.turn_id) != (
+                row["snapshot_id"], game_id, turn_id):
+            raise GeneratedSceneCorrupt("generated scene row identity mismatch")
+        return record
+
+    def generated_scene_snapshot(self, game_id: str, turn_id: str) -> GeneratedSceneSnapshot | None:
+        with self.engine.connect() as db:
+            return self._generated_scene_snapshot(db, game_id, turn_id)
+
+    def save_generated_scene_snapshot(self, snapshot: GeneratedSceneSnapshot) -> GeneratedSceneSnapshot:
+        record = GeneratedSceneSnapshot.from_storage(snapshot.canonical_json, snapshot.checksum)
+        if record != snapshot:
+            raise GeneratedSceneCorrupt("generated scene wrapper mismatch")
+        with self.engine.begin() as db:
+            if db.dialect.name == "sqlite":
+                db.exec_driver_sql("BEGIN IMMEDIATE")
+            lock = " FOR UPDATE" if db.dialect.name == "postgresql" else ""
+            game = db.execute(text("SELECT game_id FROM games WHERE game_id=:game_id" + lock),
+                              {"game_id": record.game_id}).first()
+            if game is None:
+                raise KeyError(record.game_id)
+            prior = self._generated_scene_snapshot(db, record.game_id, record.turn_id)
+            if prior is not None:
+                if prior != record:
+                    raise GeneratedSceneConflict("generated scene already exists")
+                return prior
+            db.execute(text("""INSERT INTO generated_scene_snapshots
+                (game_id,turn_id,snapshot_id,canonical_json,checksum)
+                VALUES (:game_id,:turn_id,:snapshot_id,:canonical_json,:checksum)"""),
+                {"game_id": record.game_id, "turn_id": record.turn_id,
+                 "snapshot_id": record.snapshot_id, "canonical_json": record.canonical_json,
+                 "checksum": record.checksum})
+            return self._generated_scene_snapshot(db, record.game_id, record.turn_id)
+
     def event_details(self, game_id: str, event_id: str) -> dict[str, object] | None:
         with self.engine.connect() as db:
             row = db.execute(text("""SELECT details FROM events
@@ -96,6 +142,11 @@ class SQLGameStore:
                                  {"game_id": game_id}).mappings().first()
                 if row is None:
                     raise KeyError(game_id)
+                if event is not None and any(key in event.details for key in (
+                        "generated_scene_snapshot_id", "generated_scene_snapshot_checksum")):
+                    referenced = self._generated_scene_snapshot(
+                        db, game_id, event.event_id.rsplit(":", 1)[0])
+                    validate_event_snapshot_reference(event, referenced)
                 before = self._snapshot(row)
                 if before.version != expected_version:
                     raise ValueError("game state version changed")

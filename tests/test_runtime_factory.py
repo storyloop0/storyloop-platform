@@ -10,6 +10,31 @@ from storyloop_harness.advanced import PendingWork
 from test_turn_failure_contract import portal
 
 
+def test_player_and_preview_engines_leave_generated_scene_recovery_disabled(portal):
+    factory = portal.gameplay.factory
+    item = portal.gameplay.game_access.listing_for('unused', 'npc-chat')
+    package = ScenarioPackage.load(item.package_path)
+    package.seed_game(factory.store, 'recovery-disabled')
+    player_engine = factory.engine(item, package, 'recovery-disabled')
+    assert player_engine.generated_scene_recovery is None
+
+    import asyncio
+    from test_scenario_lifecycle_concurrency import archive
+
+    author = portal.register('snapshot-preview-author', 'password-123')
+    reviewer = portal.register('snapshot-preview-reviewer', 'password-123')
+    portal.access.bootstrap_admin('snapshot-preview-reviewer')
+    draft = asyncio.run(portal.upload_scenario(author['token'], 'Preview', '', archive()))
+    submission = portal.submit_scenario(author['token'], draft['id'])
+    preview = asyncio.run(portal.create_review_preview(reviewer['token'], submission['submission_id']))
+    reviewer_id = portal.accounts.resolve_token(reviewer['token'])
+    saved = portal.accounts.get_save(reviewer_id, preview['game_id'])
+    preview_item = portal.gameplay.game_access.verified_listing(saved)
+    preview_package = ScenarioPackage.load(preview_item.package_path)
+    preview_engine = factory.engine(preview_item, preview_package, preview['game_id'])
+    assert preview_engine.generated_scene_recovery is None
+
+
 def configure(factory, model_window=65536, runtime_window=65536, output=None):
     data = factory.settings.model_dump()
     profile = data['models'][data['routes']['single_turn']]
