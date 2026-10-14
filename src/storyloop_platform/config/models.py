@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -74,6 +75,20 @@ class ModelFactory:
         definition = self.settings.models.get(profile)
         if not isinstance(definition, ChatModelSettings):
             raise ValueError("model profile must reference a chat model")
+        data = definition.model_dump(mode="json")
+        if temperature is not None:
+            data["generation"]["temperature"] = temperature
+        captured = ChatModelSettings.model_validate(data)
+        return self.create_resolved_model(
+            task=task, model_config_json=captured.model_dump_json(),
+            base_url=self.base_url(captured.provider),
+        )
+
+    def create_resolved_model(
+        self, *, task: str, model_config_json: str, base_url: str
+    ) -> OpenAIChatModel:
+        """Create the existing adapter using captured profile and endpoint terms."""
+        definition = ChatModelSettings.model_validate(json.loads(model_config_json))
         key = self._credential(definition.provider)
         from agentscope.credential import OpenAICredential
         from agentscope.model import OpenAIChatModel
@@ -85,16 +100,9 @@ class ModelFactory:
         )
 
         generation = definition.generation.model_dump(exclude_none=True)
-        if temperature is not None:
-            generation["temperature"] = temperature
-            generation = (
-                type(definition.generation)
-                .model_validate(generation)
-                .model_dump(exclude_none=True)
-            )
         return CompatibleOpenAIChatModel(
             credential=OpenAICredential(
-                api_key=key, base_url=self.base_url(definition.provider)
+                api_key=key, base_url=base_url
             ),
             model=definition.model,
             stream=False,
