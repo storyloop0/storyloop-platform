@@ -2,21 +2,21 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from hashlib import sha256
 from threading import Barrier
 
 import pytest
 from sqlalchemy import text
 
-from storyloop_harness.advanced import Observation, PendingWork, Snapshot, WorldEvent
-from storyloop_harness.agents.scene_schema import SceneTurn
-from storyloop_harness.core.generated_scene import (
-    GeneratedSceneConflict, GeneratedSceneCorrupt, GeneratedSceneSnapshot, text_hash,
+from storyloop_harness.advanced import (
+    GeneratedSceneConflict, GeneratedSceneCorrupt, GeneratedSceneSnapshot,
+    Observation, PendingWork, SceneTurn, Snapshot, WorldEvent,
 )
 from storyloop_platform.adapters.store import SQLiteGameStore
 
 
 def record(game_id="game", **changes):
-    fields = dict(game_id=game_id, turn_id="turn", input_hash=text_hash("Hello"),
+    fields = dict(game_id=game_id, turn_id="turn", input_hash=sha256(b"Hello").hexdigest(),
                   base_version=0, base_tick=0, base_state_hash="b" * 64,
                   scenario_id="harbor", scenario_version="1", package_fingerprint="c" * 64,
                   system_prompt_hash="d" * 64, output_schema_hash="e" * 64,

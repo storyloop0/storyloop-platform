@@ -9,10 +9,10 @@ from dataclasses import asdict
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
 
-from storyloop_harness.advanced import AgentContextCheckpoint, AgentContextEntry, Observation, PendingWork, PlayerInput, Snapshot, WorldEvent, validate_checkpoint
-from storyloop_harness.advanced import apply_event
-from storyloop_harness.core.generated_scene import (
-    GeneratedSceneConflict, GeneratedSceneCorrupt, GeneratedSceneSnapshot,
+from storyloop_harness.advanced import (
+    AgentContextCheckpoint, AgentContextEntry, GeneratedSceneConflict,
+    GeneratedSceneCorrupt, GeneratedSceneSnapshot, Observation, PendingWork,
+    PlayerInput, Snapshot, WorldEvent, apply_event, validate_checkpoint,
     validate_event_snapshot_reference,
 )
 

@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +18,6 @@ from storyloop_harness.generation import (
 from storyloop_harness import ScenarioPackage
 from storyloop_harness import TurnEngine, TurnInput
 from storyloop_harness.advanced import SceneContext, Snapshot, StorySegment
-from storyloop_harness.models.execution_control import current_execution_control
 from storyloop_harness.generation import execution_budget_scope
 from storyloop_harness.testing import OfflineModel
 from storyloop_platform.config import PlatformSettings, default_settings
@@ -35,6 +36,26 @@ from test_generation_budget_integration import _completion, Decision
 from scenario_fixtures import source_package
 
 
+def observe_execution_scope(monkeypatch):
+    """Record the control yielded by the public scope used by Platform turns."""
+    from storyloop_platform.gameplay import turns as turn_module
+
+    active = ContextVar("observed_execution_control", default=None)
+    original_scope = turn_module.execution_budget_scope
+
+    @asynccontextmanager
+    async def observed_scope(budget):
+        async with original_scope(budget) as control:
+            token = active.set(control)
+            try:
+                yield control
+            finally:
+                active.reset(token)
+
+    monkeypatch.setattr(turn_module, "execution_budget_scope", observed_scope)
+    return active
+
+
 def test_rule_guidance_wait_uses_deadline_without_sdk_sends(portal, monkeypatch):
     from storyloop_platform.runtime.guidance import RuleGuidanceProvider
 
@@ -42,10 +63,11 @@ def test_rule_guidance_wait_uses_deadline_without_sdk_sends(portal, monkeypatch)
     game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
     portal.gameplay.factory.offline_models.model = OfflineModel()
     portal.turns.execution_budget = ExecutionBudget(6, 0.1)
+    active = observe_execution_scope(monkeypatch)
     entered = []
 
     async def slow_rule(self, context):
-        entered.append(current_execution_control().sends)
+        entered.append(active.get().sends)
         await asyncio.sleep(1)
         return ("late guidance",)
 
@@ -379,6 +401,7 @@ def test_campaign_message_writer_terminal_error_does_not_commit(error_type):
 
 
 def test_postcommit_timeout_is_audited_and_same_request_requires_recovery(portal, monkeypatch):
+    active = observe_execution_scope(monkeypatch)
     portal.turns.execution_budget = ExecutionBudget(6, 0.2)
     player = portal.register("reader", "password-123")
     game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
@@ -386,7 +409,7 @@ def test_postcommit_timeout_is_audited_and_same_request_requires_recovery(portal
     original_finish = portal.turns.audits.finish
 
     def finish(*args, **kwargs):
-        finished_outside_scope.append(current_execution_control() is None)
+        finished_outside_scope.append(active.get() is None)
         return original_finish(*args, **kwargs)
 
     monkeypatch.setattr(portal.turns.audits, "finish", finish)
@@ -410,6 +433,7 @@ def test_postcommit_timeout_is_audited_and_same_request_requires_recovery(portal
 def test_scope_starts_after_preferences_and_ends_after_view(portal, monkeypatch):
     from storyloop_platform.gameplay import turns as turn_module
 
+    active = observe_execution_scope(monkeypatch)
     model, transport = sdk_model(monkeypatch, lambda request: _completion('{"prose":"A quiet harbor."}'))
     portal.gameplay.factory.offline_models.model = model
     player = portal.register("reader", "password-123")
@@ -420,15 +444,15 @@ def test_scope_starts_after_preferences_and_ends_after_view(portal, monkeypatch)
     original_prepare = portal.turns.settlements.prepare
 
     async def preferences(*args, **kwargs):
-        seen.append(("preferences", current_execution_control() is None))
+        seen.append(("preferences", active.get() is None))
         return await original_preferences(*args, **kwargs)
 
     def view(*args, **kwargs):
-        seen.append(("view", current_execution_control() is not None))
+        seen.append(("view", active.get() is not None))
         return original_view(*args, **kwargs)
 
     def prepare(*args, **kwargs):
-        seen.append(("prepare", current_execution_control() is None))
+        seen.append(("prepare", active.get() is None))
         return original_prepare(*args, **kwargs)
 
     monkeypatch.setattr(portal.turns.memory_service, "preferences_for", preferences)
