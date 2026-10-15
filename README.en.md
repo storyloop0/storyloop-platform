@@ -222,7 +222,9 @@ Local launch selection is `--catalog`, then `STORY_CATALOG`, then the remembered
 
 The native ordinary freeform interactive runtime freezes billing mode, rates and the visible-observation boundary before model work, then saves the successful scene before world commit. After failure or reload, the web app can manually recover using the retained original request ID and input: reuse the scene, finish persisted work and settle the original success usage once at the original rates. Recovery creates no story model client and does not requeue old input for preference extraction. Read-only status lookup uses the input SHA-256 and enables the button only for confirmed recovery evidence.
 
-This covers the latest ordinary interactive request without a story blueprint. Interruption before scene save may repeat generation. Legacy records, corrupt or changed configuration, unknown billable usage and missing original rates require manual handling. Campaigns, blueprints, previews, full failed-attempt fees and multiworker claims are outside this recovery scope.
+This covers the latest ordinary interactive request without a story blueprint. This path persists a marker before generation. If an interruption leaves a marker without a valid result, the original request returns `GENERATION_UNCERTAIN`; the web app retains the request and blocks retries. Valid scenes remain available for manual recovery. Local failures or cancellation after the marker may also require manual judgment. Markers are not automatically cleared and do not prove provider acceptance or charges. Protection uses the original request ID and does not deduplicate requests sent under new IDs.
+
+Legacy records, corrupt or changed configuration, unknown billable usage and missing original rates require manual handling. Historical requests without markers retain their existing behavior. Campaigns, blueprints, previews, full failed-attempt fees and multiworker claims are outside this recovery scope.
 
 <details>
 <summary>Service composition and shutdown lifecycle</summary>
