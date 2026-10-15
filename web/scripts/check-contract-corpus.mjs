@@ -72,12 +72,21 @@ for (const name of ["create:freeform:default", "create:campaign:default", "creat
   "create:source:campaign", "create:source:freeform", "resume:intro", "resume:billed", "history:billed",
   "turn:freeform", "replay:freeform", "turn:source:campaign", "turn:source:freeform", "preview:create", "preview:turn",
   "failure:input:False", "failure:recovery:False", "failure:model:False", "failure:stopping:False", "failure:stopping:True",
-  "status:complete", "status:mismatch", "status:no-snapshot", "status:legacy"]) {
+  "status:complete", "status:mismatch", "status:no-snapshot", "status:legacy",
+  "failure:uncertain:False", "status:uncertain:False", "status:uncertain:True"]) {
   assert.ok(names.has(name), `Missing actual handler response: ${name}`);
 }
 const recoveryStatuses = responses.filter((item) => item.kind === "TurnRecoveryStatus");
 assert.deepEqual(new Set(recoveryStatuses.map((item) => item.payload.reason_code)),
-  new Set(["RECEIPT_READY", "INPUT_MISMATCH", "NO_SNAPSHOT", "LEGACY_REQUEST"]));
+  new Set(["RECEIPT_READY", "INPUT_MISMATCH", "NO_SNAPSHOT", "LEGACY_REQUEST", "GENERATION_UNCERTAIN"]));
+const uncertain = responses.filter((item) => item.name.startsWith("failure:uncertain:")
+  && item.payload.code === "GENERATION_UNCERTAIN");
+assert.equal(uncertain.length, 2);
+for (const item of uncertain) {
+  assert.equal(item.payload.request_id, "native-uncertain");
+  assert.equal(item.payload.retryable, false);
+  assert.equal(item.payload.commit_state, "unknown");
+}
 const events = responses.filter((item) => item.kind === "TurnStreamEvent").map((item) => item.payload);
 assert.deepEqual(new Set(events.map((event) => event.type)), new Set(["stage", "segment", "preview", "complete", "error"]));
 const streamed = responses.filter((item) => item.name.startsWith("stream:freeform:")).map((item) => item.payload);

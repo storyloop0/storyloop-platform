@@ -47,6 +47,64 @@ test("positive read-only proof manually retrieves the original request once afte
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem("storyloop.pending.game"))).toBeNull();
 });
 
+test("uncertain GET locks a disconnected original request through reload and invalid reads", async ({ page }) => {
+  const posts: { request_id: string; text: string }[] = [];
+  let reads = 0;
+  await playerApi(page, view, async (route) => {
+    posts.push(route.request().postDataJSON());
+    await route.fulfill({ contentType: "text/event-stream", body: 'data: {"type":"stage","stage":"thinking"}\n\n' });
+  }, async (route) => {
+    reads++;
+    if (reads > 1) return route.fulfill({ status: 500, json: { detail: "offline" } });
+    return route.fulfill({ json: { request_id: posts[0].request_id, status: "blocked",
+      can_recover: false, reason_code: "GENERATION_UNCERTAIN" } });
+  });
+  await page.goto("/play/game");
+  await page.getByLabel("写下你的行动或想说的话").fill("我走向码头");
+  await page.getByLabel("写下你的行动或想说的话").press("Enter");
+  const copy = "这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。";
+  await expect(page.getByText(copy, { exact: true })).toBeVisible();
+  const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem("storyloop.pending.game")!));
+  expect(saved).toEqual({ id: posts[0].request_id, text: "我走向码头", retryable: false, error: copy });
+  await page.reload();
+  await expect(page.getByText(copy, { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试这条行动" })).toHaveCount(0);
+  await expect(page.getByLabel("写下你的行动或想说的话")).toHaveCount(0);
+  expect(posts).toHaveLength(1);
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("storyloop.pending.game")!))).toEqual(saved);
+});
+
+test("uncertain SSE preserves the lock until a later valid manual scene recovery", async ({ page }) => {
+  const posts: { request_id: string; text: string }[] = [];
+  let ready = false;
+  await playerApi(page, view, async (route) => {
+    const input = route.request().postDataJSON();
+    posts.push(input);
+    const event = posts.length === 1
+      ? { type: "error", message: "这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。",
+        code: "GENERATION_UNCERTAIN", retryable: false, commit_state: "unknown", request_id: input.request_id }
+      : { type: "complete", view: { ...view, state_version: 1, body: "原结果已取回。", turn_id: input.request_id } };
+    await route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify(event)}\n\n` });
+  }, async (route) => route.fulfill({ json: { request_id: posts[0].request_id,
+    status: ready ? "recoverable" : "blocked", can_recover: ready,
+    reason_code: ready ? "SCENE_READY" : "GENERATION_UNCERTAIN" } }));
+  await page.goto("/play/game");
+  await page.getByLabel("写下你的行动或想说的话").fill("我走向码头");
+  await page.getByLabel("写下你的行动或想说的话").press("Enter");
+  const copy = "这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。";
+  await expect(page.getByText(copy, { exact: true })).toBeVisible();
+  expect(posts).toHaveLength(1);
+  await expect(page.getByRole("button", { name: "重试这条行动" })).toHaveCount(0);
+  ready = true;
+  await page.reload();
+  await expect(page.getByRole("button", { name: "继续恢复这条行动" })).toBeVisible();
+  expect(posts).toHaveLength(1);
+  await page.getByRole("button", { name: "继续恢复这条行动" }).click();
+  await expect(page.getByText("原结果已取回。", { exact: true })).toBeVisible();
+  expect(posts).toEqual([posts[0], posts[0]]);
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("storyloop.pending.game"))).toBeNull();
+});
+
 for (const invalidStatus of [
   { request_id: "other-request", status: "recoverable", can_recover: true, reason_code: "SCENE_READY" },
   { request_id: "saved-request", status: "recoverable", can_recover: false, reason_code: "SCENE_READY" },

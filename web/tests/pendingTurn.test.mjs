@@ -42,6 +42,14 @@ test("manual recovery state survives refresh without discarding the original req
   assert.deepEqual(readPendingTurn("game-a", storage), turn);
 });
 
+test("uncertain lock persists the exact original request and safe copy", () => {
+  const storage = memoryStorage();
+  const turn = { id: "request-uncertain", text: " 我走向门口 ", retryable: false,
+    error: "这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。" };
+  savePendingTurn("game-a", turn, storage);
+  assert.deepEqual(readPendingTurn("game-a", storage), turn);
+});
+
 test("only matching explicitly unstarted requests unlock editing and clear persisted pending", () => {
   const storage = memoryStorage();
   savePendingTurn("game-a", { id: "request-1", text: "long message" }, storage);

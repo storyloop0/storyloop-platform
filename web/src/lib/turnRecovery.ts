@@ -1,4 +1,14 @@
 import type { TurnRecoveryStatus } from "./contracts";
+import type { StoredPendingTurn } from "./pendingTurn";
+
+export function blockPendingFromRecovery(
+  pending: StoredPendingTurn, status: TurnRecoveryStatus,
+): StoredPendingTurn {
+  if (status.request_id !== pending.id || status.status !== "blocked"
+      || status.reason_code !== "GENERATION_UNCERTAIN") return pending;
+  return { ...pending, retryable: false,
+    error: "这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。" };
+}
 
 export type RecoveryProof = {
   gameId: string;

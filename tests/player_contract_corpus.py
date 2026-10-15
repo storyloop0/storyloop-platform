@@ -18,6 +18,7 @@ import zipfile
 from fastapi.testclient import TestClient
 from httpx2 import Request
 from openai import APIConnectionError
+from openai import AsyncClient as OpenAIAsyncClient
 from storyloop_harness.testing import OfflineModel
 from storyloop_harness.usage import collect_usage, record_model_usage
 from storyloop_platform.bootstrap import build_portal
@@ -27,6 +28,7 @@ from storyloop_platform.portal.http_api import create_app
 from storyloop_platform.runtime.campaign import CampaignProgram
 
 from committed_input import commit_player_input
+from player_recovery_process import OfflineMemory, offline_transport, opening as native_opening, settings as native_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -283,7 +285,68 @@ def export_corpus(root: Path) -> list[dict]:
                              json=dict(text="Hello", request_id="stopping"))
         finally:
             portal.close()
+    corpus.extend(_native_uncertain_corpus(root))
     return corpus
+
+
+def _native_uncertain_corpus(root: Path) -> list[dict]:
+    """Exercise the protected native scene engine with real offline SDK HTTP."""
+    transport = offline_transport(root / "native-sdk-posts.log")
+    original_init = OpenAIAsyncClient.__init__
+
+    def sdk_init(client, *positional, **keywords):
+        keywords["http_client"] = transport
+        original_init(client, *positional, **keywords)
+
+    rows: list[dict] = []
+    with patch.object(OpenAIAsyncClient, "__init__", sdk_init), patch.dict(os.environ, {
+        "STORY_MODEL_API_KEY": "offline-contract-key", "LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": "",
+    }):
+        portal = build_portal(ROOT / "examples/catalog.json", native_settings(),
+                              str(root / "native.sqlite3"), prologue_generator=native_opening)
+        portal.memory_service.provider = OfflineMemory()
+        portal.memory_service.enabled = True
+        try:
+            with TestClient(create_app(portal), base_url="http://127.0.0.1") as client:
+                token = portal.register("native-reader", "offline-password-123")["token"]
+                headers = {"Authorization": f"Bearer {token}"}
+                for stream in (False, True):
+                    game = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
+                    path = f"/v1/saves/{game}/turns"
+                    store = portal.turns.store
+                    original_save = store.save_generated_scene_snapshot
+
+                    def fail_before_save(snapshot):
+                        raise RuntimeError("offline native scene save interruption")
+
+                    store.save_generated_scene_snapshot = fail_before_save
+                    try:
+                        with patch("storyloop_platform.lifecycle.logger"), patch("storyloop_platform.portal.http_api.logger"):
+                            result = client.post(path + ("/stream" if stream else ""), headers=headers,
+                                                 json={"text": "I ask the dockhand about the morning boat.",
+                                                       "request_id": "native-uncertain"})
+                    finally:
+                        store.save_generated_scene_snapshot = original_save
+                    assert result.status_code == (200 if stream else 409), result.text
+                    if stream:
+                        events = [json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
+                        rows.extend({"name": f"failure:uncertain:{stream}:{i}", "kind": "TurnStreamEvent",
+                                     "payload": event} for i, event in enumerate(events))
+                        assert events[-1]["code"] == "GENERATION_UNCERTAIN", events
+                    else:
+                        rows.append({"name": f"failure:uncertain:{stream}", "kind": "TurnFailure",
+                                     "payload": result.json()})
+                    status = client.get(path + "/native-uncertain/recovery", headers=headers,
+                                        params={"input_hash": hashlib.sha256(
+                                            b"I ask the dockhand about the morning boat.").hexdigest()})
+                    assert status.status_code == 200, status.text
+                    rows.append({"name": f"status:uncertain:{stream}", "kind": "TurnRecoveryStatus",
+                                 "payload": status.json()})
+                    assert status.json()["reason_code"] == "GENERATION_UNCERTAIN"
+        finally:
+            portal.close()
+            asyncio.run(transport.aclose())
+    return rows
 
 
 def main() -> None:

@@ -29,10 +29,10 @@ async function requireFreePort(): Promise<void> {
   }
 }
 
-async function startApi(db: string, posts: string, marker: string): Promise<ChildProcess> {
+async function startApi(db: string, posts: string, marker: string, fault = "after_snapshot"): Promise<ChildProcess> {
   await requireFreePort();
   const child = spawn(python, [fixture, "--db", db, "--posts", posts,
-    "--fault-marker", marker], {
+    "--fault-marker", marker, "--fault", fault], {
     cwd: repo,
     env: { ...process.env, PYTHONPATH: join(repo, "src"), PYTHONUTF8: "1" },
     stdio: ["ignore", "pipe", "pipe"],
@@ -143,6 +143,68 @@ test("manual recovery replays the original request after API restart and permits
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
         // On Windows the SQLite file is owned by the Python fixture process.
+        const cleanup = spawnSync(python, ["-c",
+          "import pathlib,shutil,sys\np=pathlib.Path(sys.argv[1]).resolve()\nroot=pathlib.Path(sys.argv[2]).resolve()\nif p.parent!=root or not p.name.startswith('.player-recovery-'):\n raise SystemExit('unsafe cleanup path')\nshutil.rmtree(p)",
+          temp, repo], { cwd: repo, encoding: "utf8" });
+        if (cleanup.status !== 0) throw new Error(`Python fixture cleanup failed: ${cleanup.stderr}`);
+      }
+    }
+  }
+});
+
+test("native before-snapshot uncertainty keeps one original request locked after reload", async ({ page }) => {
+  const temp = mkdtempSync(join(repo, ".player-recovery-"));
+  const db = join(temp, "world.sqlite3");
+  const posts = join(temp, "sdk-posts.log");
+  const marker = join(temp, "interrupted.marker");
+  const sent: { text: string; request_id: string }[] = [];
+  let api: ChildProcess | null = null;
+  try {
+    api = await startApi(db, posts, marker, "before_snapshot");
+    await page.route("**/*", (route) => {
+      const url = new URL(route.request().url());
+      return url.protocol.startsWith("http") && url.origin !== "http://127.0.0.1:5173"
+        ? route.abort() : route.continue();
+    });
+    page.on("request", (request) => {
+      if (request.method() === "POST" && /\/v1\/saves\/[^/]+\/turns\/stream$/.test(request.url()))
+        sent.push(request.postDataJSON());
+    });
+    await page.goto("/login");
+    await page.getByRole("tab", { name: "注册" }).click();
+    await page.getByLabel("用户名").fill(`uncertain${Date.now()}`);
+    await page.getByLabel("密码").fill("recovery-password-123");
+    await page.getByRole("button", { name: "创建账号" }).click();
+    await page.getByRole("article").filter({ has: page.getByRole("heading", { name: "港口 NPC 对话" }) })
+      .getByRole("button", { name: "开始旅程" }).click();
+    await expect(page).toHaveURL(/\/play\/[^/]+$/);
+    const gameId = new URL(page.url()).pathname.split("/").pop()!;
+    const action = page.getByLabel("写下你的行动或想说的话");
+    const firstText = "我询问早班船什么时候靠岸";
+    await action.fill(firstText);
+    await action.press("Enter");
+    const copy = "这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。";
+    await expect(page.getByText(copy, { exact: true })).toBeVisible({ timeout: 15000 });
+    expect(existsSync(marker)).toBe(true);
+    expect(sent).toHaveLength(1);
+    const original = sent[0];
+    const saved = await page.evaluate((id) => JSON.parse(sessionStorage.getItem(`storyloop.pending.${id}`)!), gameId);
+    expect(saved).toEqual({ id: original.request_id, text: firstText, retryable: false, error: copy });
+    await page.reload();
+    await expect(page.getByText(copy, { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "重试这条行动" })).toHaveCount(0);
+    await expect(page.getByLabel("写下你的行动或想说的话")).toHaveCount(0);
+    expect(sent).toEqual([original]);
+    expect(readFileSync(posts, "utf8").trim().split("\n")).toHaveLength(1);
+    expect(await page.evaluate((id) => JSON.parse(sessionStorage.getItem(`storyloop.pending.${id}`)!), gameId)).toEqual(saved);
+  } finally {
+    await page.close();
+    if (api) await stopApi(api);
+    const target = resolve(temp);
+    if (target.startsWith(repo + "\\") || target.startsWith(repo + "/")) {
+      try { rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
         const cleanup = spawnSync(python, ["-c",
           "import pathlib,shutil,sys\np=pathlib.Path(sys.argv[1]).resolve()\nroot=pathlib.Path(sys.argv[2]).resolve()\nif p.parent!=root or not p.name.startswith('.player-recovery-'):\n raise SystemExit('unsafe cleanup path')\nshutil.rmtree(p)",
           temp, repo], { cwd: repo, encoding: "utf8" });
