@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from storyloop_harness import TurnInput
+from storyloop_harness.generation import ExecutionRequestLimitExceeded, ExecutionTimeout
 from storyloop_harness.usage import ModelUsage
 
 import asyncio
@@ -660,6 +661,8 @@ class CampaignSession:
                     )
                     batch_prose = batch.prose.strip()
                     batch_messages = batch.messages
+                except (ExecutionRequestLimitExceeded, ExecutionTimeout):
+                    raise
                 except Exception as error:
                     with self.telemetry.span("campaign-message-fallback",
                                              {"error_type": type(error).__name__}) as fallback_span:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
-from storyloop_harness.generation import Msg
+from storyloop_harness.generation import Msg, ExecutionRequestLimitExceeded, ExecutionTimeout
 from agentscope.model import ChatModelBase
 from pydantic import BaseModel, Field
 
@@ -144,6 +144,8 @@ class NovelTurnNarrator:
                 if self.telemetry.capture_content:
                     span.update(output=prose)
                 return prose
+        except (ExecutionRequestLimitExceeded, ExecutionTimeout):
+            raise
         except Exception as error:
             with self.telemetry.span("novel-presentation-fallback",
                                      {"error_type": type(error).__name__},

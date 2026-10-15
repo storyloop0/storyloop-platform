@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
+import asyncio
 
 from fastapi.testclient import TestClient
 import pytest
@@ -13,6 +15,7 @@ from storyloop_platform.bootstrap import build_portal
 from storyloop_platform.memory.providers import Mem0PlayerMemory
 from storyloop_platform.memory.jobs import SQLPlayerMemoryJobs
 from storyloop_platform.memory.service import PlayerMemoryService
+from storyloop_platform.lifecycle import OperationSupervisor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +59,7 @@ def test_profile_is_opt_in_batched_and_scoped_to_player(tmp_path: Path) -> None:
     jobs = portal.memory_service.jobs
     portal.memory_service.provider = fake
     portal.memory_service.enabled = True
+    portal.memory_service._utc_now = lambda: datetime(2026, 10, 14, tzinfo=timezone.utc)
     with TestClient(create_app(portal), base_url="http://127.0.0.1") as client:
         first = client.post("/v1/accounts", json={"username": "first-player",
                                                   "password": "password-123"}).json()
@@ -161,6 +165,7 @@ def test_player_memory_http_single_record_controls_are_authenticated_and_scoped(
     fake = FakePlayerMemory()
     portal.memory_service.provider = fake
     portal.memory_service.enabled = True
+    portal.memory_service._utc_now = lambda: datetime(2026, 10, 14, tzinfo=timezone.utc)
     with TestClient(create_app(portal), base_url="http://127.0.0.1") as client:
         first = client.post("/v1/accounts", json={"username": "memory-first",
                                                    "password": "password-123"}).json()
@@ -169,11 +174,17 @@ def test_player_memory_http_single_record_controls_are_authenticated_and_scoped(
         client.cookies.clear()
         auth = {"Authorization": f"Bearer {first['token']}"}
         other = {"Authorization": f"Bearer {second['token']}"}
-        fake.rows[first["player_id"]] = [{"id": "own", "text": "old", "created_at": ""}]
+        fake.rows[first["player_id"]] = [{"id": "own", "text": "old", "created_at": "2026-07-16T00:00:00Z",
+                                          "updated_at": "2026-10-13T00:00:00Z", "source": "story_turn_batch"}]
         fake.rows[second["player_id"]] = [{"id": "foreign", "text": "other", "created_at": ""}]
         jobs = portal.memory_service.jobs
         jobs.set_enabled(first["player_id"], True)
         jobs.set_enabled(second["player_id"], True)
+        assert client.get("/v1/me/memory").status_code == 401
+        body = client.get("/v1/me/memory", headers=auth).json()
+        assert body["generated_preference_max_age_days"] == 90
+        assert body["memories"][0] == dict(fake.rows[first["player_id"]][0],
+                                           freshness="expired", expires_at="2026-10-14T00:00:00Z")
         assert jobs.enqueue(first["player_id"], "g", "a1", "old preference input")
         assert jobs.enqueue(second["player_id"], "g", "b1", "other preference input")
 
@@ -192,9 +203,56 @@ def test_player_memory_http_single_record_controls_are_authenticated_and_scoped(
         assert corrected.status_code == 200
         assert corrected.json()["memories"][0]["text"] == "new preference"
         assert corrected.json()["memories"][0]["source"] == "user_correction"
+        assert corrected.json()["memories"][0]["freshness"] == "current"
+        assert corrected.json()["memories"][0]["expires_at"] is None
         assert corrected.json()["queued_inputs"] == 0
         assert jobs.pending_count(second["player_id"]) == 1
         portal.memory_service.enabled = False
         deleted = client.delete("/v1/me/memory/own", headers=auth)
         assert deleted.status_code == 200 and deleted.json()["memories"] == []
         assert client.get("/v1/me/memory", headers=other).json()["memories"][0]["text"] == "other"
+
+
+def test_persisted_read_derives_expiry_without_model_or_mutator_calls(tmp_path: Path, monkeypatch) -> None:
+    factory = ModelFactory(load_settings(ROOT / "config/online.json"), env={"STORY_MODEL_API_KEY": "offline-key"})
+    location = tmp_path / "memory"
+    memory = Mem0PlayerMemory(factory, location)
+    try:
+        memory._memory.embedding_model.embed = lambda _text, _action=None: [0.1] * 1024
+        memory._memory.add("player prefers slower pacing", user_id="player-a", infer=False,
+                           metadata={"source": "story_turn_batch"})
+        seeded = memory.list_memories("player-a")[0]
+    finally:
+        memory.close()
+
+    reopened = Mem0PlayerMemory(factory, location)
+    def unexpected(*args, **kwargs):
+        raise AssertionError("read-only freshness must not call models or mutators")
+    try:
+        for method in ("embed",):
+            monkeypatch.setattr(reopened._memory.embedding_model, method, unexpected)
+        for method in ("search", "add", "update", "delete", "delete_all"):
+            monkeypatch.setattr(reopened._memory, method, unexpected)
+        monkeypatch.setattr(reopened._memory.llm, "generate_response", unexpected)
+        saved = reopened.list_memories("player-a")[0]
+        assert (saved["id"], saved["text"], saved["created_at"]) == (
+            seeded["id"], seeded["text"], seeded["created_at"])
+
+        class Jobs:
+            def enabled(self, _player_id):
+                return True
+            def pending_count(self, _player_id):
+                return 0
+        created = datetime.fromisoformat(saved["created_at"].replace("Z", "+00:00"))
+        now = created.astimezone(timezone.utc) + timedelta(days=90)
+        service = PlayerMemoryService(reopened, Jobs(), True, None, OperationSupervisor(),
+                                      utc_now=lambda: now)
+        async def read():
+            assert await service.preferences_for("player-a") == ()
+            status = await service.status("player-a")
+            assert status["memories"][0]["freshness"] == "expired"
+            assert status["memories"][0]["created_at"] == saved["created_at"]
+            assert status["memories"][0]["id"] == saved["id"]
+        asyncio.run(read())
+    finally:
+        reopened.close()

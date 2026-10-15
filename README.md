@@ -193,7 +193,7 @@ SQL 存储已支持 Harness 的角色经历 checkpoint 来源与剧本校验；�
 
 新存档从 `single_turn` 取得默认温度（未设置时为 1.0）。存档相关的场景、叙述、裁定和后续建议生成使用该存档保存的温度覆盖，包括更新设置后；没有传入存档覆盖时使用各模型配置自己的温度。独立开场生成使用自己的模型配置。
 
-每个聊天模型配置的结构化生成默认最多发送 3 次补全请求，总期限为 90 秒，覆盖重试与回退。可在对应配置中设置正数 `generation_max_requests` 和 `generation_timeout_seconds`。限制按每次结构化生成计算，不代表整轮限制；无结构化模型的普通调用维持原有行为。供应商 HTTP 的 `timeout_seconds` 与 `max_retries` 是独立配置。
+每个聊天模型配置的结构化生成默认最多发送 3 次补全请求，总期限为 90 秒，覆盖重试与回退。可在对应配置中设置正数 `generation_max_requests` 和 `generation_timeout_seconds`。单次结构化生成限制与整轮执行预算同时生效。供应商 HTTP 的 `timeout_seconds` 与 `max_retries` 是独立配置。
 
 显式检查模型访问：
 
@@ -213,6 +213,14 @@ SQL 存储已支持 Harness 的角色经历 checkpoint 来源与剧本校验；�
 本地剧本目录选择优先级为 `--catalog`、`STORY_CATALOG`、记住的目录。不传 `--config` 时，成功启动会记住自定义配置路径（或使用包内默认配置）和数据库路径；`--db` 覆盖记住的数据库。显式传入 `--config` 会重新选择，需要同时提供 `--catalog` 或 `STORY_CATALOG`，不会继承记住的配置或数据库路径。线上启动使用 `--profile online`，不读取本地记住的路径、不交互询问密钥，并在创建资源前验证必要的部署环境变量。`--profile` 必须与配置的 `environment` 一致。
 
 </details>
+
+### 整轮执行与偏好策略
+
+`runtime.turn_max_requests` 默认 6，`runtime.turn_timeout_seconds` 默认 180 秒。场景、战役及其他兼容适配器调用共享该执行额度；预览和关闭计费的回合也受限。期限从预检查、剧本与偏好读取后开始，到视图构造完成结束，不包含排队/锁等待、SQL 审计收尾、积分结算、网络交付和后台记忆提炼。超限或超时返回固定 HTTP/SSE 错误，不自动重试；世界可能已经提交，成功用量扣费规则保持现有口径。
+
+`player_memory.generated_preference_max_age_days` 默认 90；自动偏好按 UTC 创建时间满 90 天后退出提示词，画像仍可查看、纠正和删除。人工纠正持续有效；缺失、非法、无时区或未来日期的自动记录显示 unknown 并退出提示词。显式 `null` 关闭日期过滤。策略只读取现有最多 20 条候选，过滤后取最多 8 条，不额外调用 embedding，也不删除 Mem0 记录。
+
+Platform 已提供生成场景快照的 SQL 存储和迁移，玩家及预览恢复保持关闭；历史用量与冻结费率的结算恢复仍待后续接入。
 
 <details>
 <summary>服务装配与关闭生命周期</summary>

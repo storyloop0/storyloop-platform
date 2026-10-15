@@ -85,6 +85,8 @@ export function PlayerMemoryPage() {
             </div>
             <div className="memory-explainer">
               <p>开启后，系统从你的有效行动中提炼节奏、文风与互动习惯。每累计 {status.batch_size} 条有效输入，且距离上次提炼至少 {status.min_interval_hours} 小时，才会启动一次后台提炼。</p>
+              <p>{status.generated_preference_max_age_days === null ? "未启用自动过期" :
+                `自动提炼的偏好会在创建 ${status.generated_preference_max_age_days} 天后停止供故事参考，记录仍可纠正或删除。`}</p>
               <p><strong>费用说明：</strong>提炼会产生百炼 API 费用；内测期间由平台承担，不扣你的积分。关闭后不再采集新输入，已生成偏好会保留，直到你纠正、删除或清空。</p>
             </div>
             <div className="memory-control-row">
@@ -137,6 +139,9 @@ export function PlayerMemoryPage() {
                     ) : (
                       <>
                         <p className="memory-row-text">{item.text}</p>
+                        <p className="memory-row-freshness">{item.freshness === "expired" ? "已过期，不再供故事参考" :
+                          item.freshness === "unknown" ? "时间信息不足，暂不供故事参考" :
+                          item.source === "user_correction" ? "你已纠正，持续有效" : "有效"}</p>
                         <div className="memory-row-footer">
                           <span className="memory-row-meta">
                             {item.source === "user_correction" ? "你已纠正" : "故事提炼"}

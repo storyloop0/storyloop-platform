@@ -2,9 +2,21 @@ import json
 import os
 
 import httpx
+import pytest
 
-from storyloop_platform.config import ModelFactory, PlatformSettings, default_settings
+from storyloop_platform.config import ModelFactory, PlatformSettings, default_settings, load_settings
+from storyloop_platform.config.schema import PlayerMemorySettings
 from storyloop_platform.memory.providers import Mem0PlayerMemory
+
+
+def test_generated_preference_age_config_defaults_and_explicit_off():
+    assert PlayerMemorySettings().generated_preference_max_age_days == 90
+    assert PlayerMemorySettings.model_validate({"generated_preference_max_age_days": None}).generated_preference_max_age_days is None
+    for invalid in (0, -1, 1.5, "90"):
+        with pytest.raises(ValueError):
+            PlayerMemorySettings.model_validate({"generated_preference_max_age_days": invalid})
+    assert default_settings("online").player_memory.generated_preference_max_age_days == 90
+    assert load_settings("config/online.json").player_memory.generated_preference_max_age_days == 90
 
 
 def test_mem0_clients_use_profile_providers_despite_global_openrouter_env(

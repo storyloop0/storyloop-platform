@@ -150,6 +150,8 @@ class RuntimeSettings(SettingsModel):
     max_npc_replies: PositiveInt = 3
     followup_timeout_seconds: Seconds = 12
     context_window_tokens: Annotated[int, Field(ge=1024)] = 65536
+    turn_max_requests: PositiveInt = 6
+    turn_timeout_seconds: Seconds = 180
 
 
 class StorageSettings(SettingsModel):
@@ -170,6 +172,7 @@ class PlayerMemorySettings(SettingsModel):
     path_env: EnvName | None = None
     extraction_profile: Name | None = None
     embedding_profile: Name | None = None
+    generated_preference_max_age_days: PositiveInt | None = 90
 
 
 class CreditsSettings(SettingsModel):

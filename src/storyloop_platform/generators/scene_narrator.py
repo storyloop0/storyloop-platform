@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from storyloop_harness.generation import Msg
+from storyloop_harness.generation import Msg, ExecutionRequestLimitExceeded, ExecutionTimeout
 from agentscope.model import ChatModelBase
 from pydantic import BaseModel, Field
 
@@ -123,6 +123,8 @@ class CampaignSceneNarrator:
                 if self.telemetry.capture_content:
                     span.update(output=narration)
                 return narration
+        except (ExecutionRequestLimitExceeded, ExecutionTimeout):
+            raise
         except Exception as error:
             with self.telemetry.span("scene-narration-fallback",
                                      {"error_type": type(error).__name__}) as span:

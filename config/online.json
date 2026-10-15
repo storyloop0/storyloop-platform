@@ -9,7 +9,8 @@
     "enabled_env": "STORY_PLAYER_MEMORY_ENABLED",
     "path_env": "STORY_MEMORY_DIR",
     "extraction_profile": "memory_extraction",
-    "embedding_profile": "memory_embedding"
+    "embedding_profile": "memory_embedding",
+    "generated_preference_max_age_days": 90
   },
   "http": {
     "allowed_hosts_env": "STORY_ALLOWED_HOSTS",
