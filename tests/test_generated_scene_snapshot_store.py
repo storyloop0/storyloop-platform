@@ -4,8 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from hashlib import sha256
 from threading import Barrier
+from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import text
 
 from storyloop_harness.advanced import (
@@ -13,6 +16,8 @@ from storyloop_harness.advanced import (
     Observation, PendingWork, SceneTurn, Snapshot, WorldEvent,
 )
 from storyloop_platform.adapters.store import SQLiteGameStore
+from storyloop_platform.adapters.sql_database import open_database, sqlite_url, upgrade_database
+from storyloop_platform.adapters.sql_store import SQLGameStore
 
 
 def record(game_id="game", **changes):
@@ -129,3 +134,51 @@ def test_two_store_instances_accept_one_winner(tmp_path):
         results = list(pool.map(save, stores, candidates))
     assert results.count("conflict") == 1
     assert sum(value in candidates for value in results if value != "conflict") == 1
+
+
+def test_pre_marker_migration_preserves_snapshot_bytes_and_world(tmp_path):
+    url = sqlite_url(str(tmp_path / "pre_marker.db"))
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).resolve().parents[1] /
+                                                  "src/storyloop_platform/migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "0018_turn_recovery_contexts")
+    engine = open_database(url)
+    saved = record()
+    original_world = Snapshot("game", 0, 0, {"world": {"flag": False}})
+    try:
+        old_store = SQLGameStore(engine)
+        old_store.create_game(original_world)
+        assert old_store.save_generated_scene_snapshot(saved) == saved
+        with engine.connect() as db:
+            original_row = db.execute(text("""SELECT canonical_json,checksum FROM
+                generated_scene_snapshots WHERE game_id='game' AND turn_id='turn'""")).one()
+    finally:
+        engine.dispose()
+
+    upgrade_database(url)
+
+    def assert_snapshot_preserved():
+        engine = open_database(url)
+        try:
+            migrated = SQLGameStore(engine)
+            assert migrated.load("game") == original_world
+            assert migrated.generated_scene_snapshot("game", "turn") == saved
+            with engine.connect() as db:
+                row = db.execute(text("""SELECT canonical_json,checksum FROM
+                    generated_scene_snapshots WHERE game_id='game' AND turn_id='turn'""")).one()
+            assert row == original_row
+        finally:
+            engine.dispose()
+
+    assert_snapshot_preserved()
+    engine = open_database(url)
+    try:
+        with engine.connect() as db:
+            assert db.execute(text("SELECT COUNT(*) FROM generated_scene_generation_markers")).scalar_one() == 0
+    finally:
+        engine.dispose()
+    command.downgrade(config, "0018_turn_recovery_contexts")
+    assert_snapshot_preserved()
+    upgrade_database(url)
+    assert_snapshot_preserved()

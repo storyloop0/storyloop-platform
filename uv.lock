@@ -2611,7 +2611,7 @@ wheels = [
 [[package]]
 name = "storyloop-harness"
 version = "0.2.0"
-source = { git = "https://github.com/storyloop0/storyloop-harness.git?rev=544a5f32ed83beb84e13ba6478e52b86a97008eb#544a5f32ed83beb84e13ba6478e52b86a97008eb" }
+source = { git = "https://github.com/storyloop0/storyloop-harness.git?rev=4fa26ccdbdfba9dcaf40542029a4b046707339b0#4fa26ccdbdfba9dcaf40542029a4b046707339b0" }
 dependencies = [
     { name = "agentscope" },
     { name = "pydantic" },
@@ -2673,7 +2673,7 @@ requires-dist = [
     { name = "pywin32", marker = "sys_platform == 'win32' and extra == 'portal'", specifier = ">=306" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'agents'", specifier = ">=2.0,<3" },
-    { name = "storyloop-harness", git = "https://github.com/storyloop0/storyloop-harness.git?rev=544a5f32ed83beb84e13ba6478e52b86a97008eb" },
+    { name = "storyloop-harness", git = "https://github.com/storyloop0/storyloop-harness.git?rev=4fa26ccdbdfba9dcaf40542029a4b046707339b0" },
     { name = "tqdm", marker = "extra == 'agents'", specifier = "==4.70.1" },
     { name = "uvicorn", marker = "extra == 'portal'", specifier = ">=0.30,<1" },
 ]
