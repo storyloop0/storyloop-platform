@@ -33,6 +33,7 @@ from storyloop_platform.portal.service import PlayerPortal
 from storyloop_platform.portal.sql_billing import SQLBillingRepository
 from storyloop_platform.portal.sql_repository import SQLPlayerRepository
 from storyloop_platform.portal.turn_settlements import SQLTurnSettlements
+from storyloop_platform.portal.turn_recovery_contexts import SQLTurnRecoveryContexts
 from storyloop_platform.portal.user_scenarios import UserScenarioService
 from storyloop_platform.runtime.campaign import CampaignProgram
 
@@ -136,6 +137,7 @@ def build_portal(
             settlements=settlements, billing=billing, billing_for_policy=billing_for_policy,
             memory_service=memory_service, factory=factory, player_locks=player_locks,
             telemetry=telemetry, audits=SQLModelExecutionAudits(engine),
+            recovery_contexts=SQLTurnRecoveryContexts(engine),
             execution_budget=ExecutionBudget(settings.runtime.turn_max_requests,
                                              settings.runtime.turn_timeout_seconds))
 

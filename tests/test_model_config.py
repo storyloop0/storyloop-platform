@@ -14,6 +14,19 @@ from storyloop_harness.generation import GenerationBudget
 
 
 class ModelFactoryTests(unittest.TestCase):
+    def test_resolved_model_uses_captured_endpoint_and_existing_profile_delegates(self):
+        settings = default_settings()
+        factory = ModelFactory(settings, env={'STORY_MODEL_API_KEY': 'test-token'})
+        profile = settings.model_for('single_turn')
+        from unittest.mock import patch
+        with patch.object(factory, 'create_resolved_model', wraps=factory.create_resolved_model) as resolved:
+            model = factory.create_profile(settings.routes['single_turn'], task='single_turn',
+                                           temperature=0.75)
+            resolved.assert_called_once()
+        self.assertEqual(model.model_name, profile.model)
+        self.assertEqual(resolved.call_args.kwargs['base_url'], factory.base_url(profile.provider))
+        self.assertIn('0.75', resolved.call_args.kwargs['model_config_json'])
+
     def test_model_timeouts_and_missing_credentials(self):
         settings = default_settings()
         with self.assertRaisesRegex(ValueError, 'STORY_MODEL_API_KEY'):

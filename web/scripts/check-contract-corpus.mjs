@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { ContractError, parseView, parseHistory, parseTurnFailure, parseTurnStreamEvent } from "../src/lib/contracts.ts";
+import { ContractError, parseView, parseHistory, parseTurnFailure, parseTurnRecoveryStatus, parseTurnStreamEvent } from "../src/lib/contracts.ts";
 import { readTurnStream, responseError } from "../src/lib/playerResponses.ts";
 
 if (!process.argv[2]) throw new Error("A real backend corpus file is required.");
 const { responses } = JSON.parse(await readFile(process.argv[2], "utf8"));
-const parsers = { View: parseView, History: parseHistory, TurnFailure: parseTurnFailure, TurnStreamEvent: parseTurnStreamEvent };
+const parsers = { View: parseView, History: parseHistory, TurnFailure: parseTurnFailure,
+  TurnRecoveryStatus: parseTurnRecoveryStatus, TurnStreamEvent: parseTurnStreamEvent };
 assert.deepEqual(new Set(responses.map((item) => item.kind)), new Set(Object.keys(parsers)));
 let rejected = 0;
 function reject(parser, payload, mutate) {
@@ -17,8 +18,10 @@ function reject(parser, payload, mutate) {
   rejected++;
 }
 for (const { kind, payload } of responses) {
-  const parser = parsers[kind];
-  assert.ok(parser, `Unknown corpus kind ${kind}`);
+  assert.ok(parsers[kind], `Unknown corpus kind ${kind}`);
+  const parser = kind === "TurnRecoveryStatus"
+    ? (value) => parseTurnRecoveryStatus(value, payload.request_id)
+    : parsers[kind];
   const before = structuredClone(payload);
   assert.equal(parser(payload), payload);
   assert.deepEqual(payload, before);
@@ -45,6 +48,16 @@ for (const { kind, payload } of responses) {
     reject(parser, payload, (value) => { value.retryable = "false"; });
     reject(parser, payload, (value) => { value.commit_state = "maybe"; });
     assert.deepEqual(responseError(400, payload).failure, payload);
+  } else if (kind === "TurnRecoveryStatus") {
+    reject(parser, payload, (value) => { delete value.request_id; });
+    reject(parser, payload, (value) => { delete value.status; });
+    reject(parser, payload, (value) => { delete value.reason_code; });
+    reject(parser, payload, (value) => { delete value.can_recover; });
+    reject(parser, payload, (value) => { value.status = "future"; });
+    reject(parser, payload, (value) => { value.reason_code = "FUTURE"; });
+    reject(parser, payload, (value) => { value.can_recover = !payload.can_recover; });
+    reject(parser, payload, (value) => { value.status = payload.status === "complete" ? "blocked" : "complete"; });
+    reject(parser, payload, (value) => { value.request_id = `${payload.request_id}-mismatch`; });
   } else {
     reject(parser, payload, (value) => { value.type = "future"; });
     if (payload.type === "complete") reject(parser, payload, (value) => { delete value.view.body; });
@@ -58,9 +71,13 @@ const names = new Set(responses.map((item) => item.name));
 for (const name of ["create:freeform:default", "create:campaign:default", "create:campaign:freeform",
   "create:source:campaign", "create:source:freeform", "resume:intro", "resume:billed", "history:billed",
   "turn:freeform", "replay:freeform", "turn:source:campaign", "turn:source:freeform", "preview:create", "preview:turn",
-  "failure:input:False", "failure:recovery:False", "failure:model:False", "failure:stopping:False", "failure:stopping:True"]) {
+  "failure:input:False", "failure:recovery:False", "failure:model:False", "failure:stopping:False", "failure:stopping:True",
+  "status:complete", "status:mismatch", "status:no-snapshot", "status:legacy"]) {
   assert.ok(names.has(name), `Missing actual handler response: ${name}`);
 }
+const recoveryStatuses = responses.filter((item) => item.kind === "TurnRecoveryStatus");
+assert.deepEqual(new Set(recoveryStatuses.map((item) => item.payload.reason_code)),
+  new Set(["RECEIPT_READY", "INPUT_MISMATCH", "NO_SNAPSHOT", "LEGACY_REQUEST"]));
 const events = responses.filter((item) => item.kind === "TurnStreamEvent").map((item) => item.payload);
 assert.deepEqual(new Set(events.map((event) => event.type)), new Set(["stage", "segment", "preview", "complete", "error"]));
 const streamed = responses.filter((item) => item.name.startsWith("stream:freeform:")).map((item) => item.payload);

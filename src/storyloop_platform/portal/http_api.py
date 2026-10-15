@@ -8,7 +8,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Path, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
@@ -19,7 +19,7 @@ from storyloop_harness.generation import (
 )
 from starlette.middleware.cors import CORSMiddleware
 
-from storyloop_platform.api.contracts import History, TurnFailure, View, stream_event_adapter
+from storyloop_platform.api.contracts import History, TurnFailure, TurnRecoveryStatus, View, stream_event_adapter
 from storyloop_platform.lifecycle import ServiceStopping, GRACE_TIMEOUT, CANCEL_TIMEOUT
 from storyloop_platform.portal.service import PlayerPortal
 from storyloop_platform.portal.access import AccessDenied
@@ -577,6 +577,16 @@ def create_app(portal: PlayerPortal, *, operation_shutdown_timeout: float = GRAC
             return await operations.run(
                 lambda: portal.set_save_settings(auth, game_id,
                                                   body.temperature, body.context_window_tokens), name="set-save-settings")
+        except (ValueError, KeyError, PermissionError) as error:
+            raise _http_error(error) from error
+
+    @app.get("/v1/saves/{game_id}/turns/{request_id}/recovery", response_model=TurnRecoveryStatus)
+    def turn_recovery_status(game_id: str,
+                             request_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,64}$"),
+                             input_hash: str = Query(pattern=r"^[0-9a-f]{64}$"),
+                             auth: str = Depends(token)) -> dict:
+        try:
+            return portal.turn_recovery_status(auth, game_id, request_id, input_hash)
         except (ValueError, KeyError, PermissionError) as error:
             raise _http_error(error) from error
 

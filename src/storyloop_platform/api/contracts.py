@@ -1,7 +1,7 @@
 """Canonical player response schemas, independent of the gameplay runtime."""
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 
 class Contract(BaseModel):
@@ -130,8 +130,55 @@ TurnStreamEvent = Annotated[
 stream_event_adapter = TypeAdapter(TurnStreamEvent)
 
 
+class RecoveryStatusContract(Contract):
+    @field_validator("can_recover", mode="before", check_fields=False)
+    @classmethod
+    def strict_boolean(cls, value):
+        if type(value) is not bool:
+            raise ValueError("can_recover must be boolean")
+        return value
+
+
+class CompleteTurnRecoveryStatus(RecoveryStatusContract):
+    request_id: str
+    status: Literal["complete"]
+    can_recover: Literal[True]
+    reason_code: Literal["RECEIPT_READY"]
+
+
+class RecoverableTurnRecoveryStatus(RecoveryStatusContract):
+    request_id: str
+    status: Literal["recoverable"]
+    can_recover: Literal[True]
+    reason_code: Literal["PREPARED_READY", "SCENE_READY"]
+
+
+class BlockedTurnRecoveryStatus(RecoveryStatusContract):
+    request_id: str
+    status: Literal["blocked"]
+    can_recover: Literal[False]
+    reason_code: Literal["INPUT_MISMATCH", "LATER_REQUEST", "EVIDENCE_INVALID",
+                         "CONFIG_CHANGED", "USAGE_UNAVAILABLE", "LEGACY_REQUEST"]
+
+
+class UnavailableTurnRecoveryStatus(RecoveryStatusContract):
+    request_id: str
+    status: Literal["not_available"]
+    can_recover: Literal[False]
+    reason_code: Literal["NO_SNAPSHOT", "UNSUPPORTED"]
+
+
+TurnRecoveryStatus = Annotated[
+    CompleteTurnRecoveryStatus | RecoverableTurnRecoveryStatus |
+    BlockedTurnRecoveryStatus | UnavailableTurnRecoveryStatus,
+    Field(discriminator="status"),
+]
+turn_recovery_status_adapter = TypeAdapter(TurnRecoveryStatus)
+
+
 def contract_schemas() -> dict[str, dict]:
     """Standard JSON Schema roots consumed by the maintained frontend generators."""
     return {"View": View.model_json_schema(), "History": History.model_json_schema(),
             "TurnFailure": TurnFailure.model_json_schema(),
-            "TurnStreamEvent": stream_event_adapter.json_schema()}
+            "TurnStreamEvent": stream_event_adapter.json_schema(),
+            "TurnRecoveryStatus": turn_recovery_status_adapter.json_schema()}
