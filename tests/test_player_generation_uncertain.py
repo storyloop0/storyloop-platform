@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+from dataclasses import replace
 
 import pytest
 from sqlalchemy import text as sql_text
@@ -12,7 +13,16 @@ from storyloop_platform.portal.http_api import create_app
 import json
 
 from test_player_scene_recovery import native_portal, _save
+from test_attempt_audit_integration import sdk_model
+from test_generation_budget_integration import _completion
+from storyloop_harness.generation import GenerationTimeout
 from storyloop_platform.portal.turn_errors import TurnGenerationUncertain, TurnRecoveryRequired
+from storyloop_platform.gameplay import turns as turns_module
+from storyloop_platform.runtime.guidance import GuidanceAdvisor
+from committed_input import commit_player_input
+
+
+_OPENAI_INIT = OpenAIAsyncClient.__init__
 
 
 def test_first_failure_and_same_request_are_uncertain(native_portal, monkeypatch):
@@ -60,6 +70,200 @@ def test_marker_without_context_is_invalid(native_portal, monkeypatch):
         asyncio.run(portal.turn(token, game_id, action, request_id))
     assert len(sends) == 1
     assert portal.turns.recovery_contexts.get(game_id, request_id) is None
+
+
+def test_orphan_retry_has_no_side_effects(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token, game_id = _save(portal)
+    monkeypatch.setattr(portal.turns.store, "save_generated_scene_snapshot",
+                        lambda snapshot: (_ for _ in ()).throw(RuntimeError("write failure")))
+    with pytest.raises(TurnGenerationUncertain):
+        asyncio.run(portal.turn(token, game_id, "look", "orphan-safe"))
+    with portal.accounts.engine.begin() as db:
+        db.execute(sql_text("DELETE FROM turn_recovery_contexts WHERE game_id=:game"),
+                   {"game": game_id})
+    tables = ("games", "events", "observations", "pending_work", "turn_recovery_contexts",
+              "generated_scene_generation_markers", "generated_scene_snapshots",
+              "model_execution_audits", "turn_settlement_intents", "portal_turns",
+              "credit_ledger")
+
+    def durable_rows():
+        with portal.accounts.engine.connect() as db:
+            return {table: tuple(db.execute(sql_text(
+                f"SELECT * FROM {table} WHERE game_id=:game"), {"game": game_id}).all())
+                for table in tables}
+
+    before = durable_rows()
+    wallet = portal.wallet(token)
+    ledger = portal.credit_ledger(token)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("orphan retry started new work")
+    monkeypatch.setattr(portal.memory_service, "preferences_for", forbidden)
+    monkeypatch.setattr(portal.turns.audits, "start", forbidden)
+    monkeypatch.setattr(portal.turns.recovery_contexts, "freeze", forbidden)
+    with pytest.raises(TurnRecoveryRequired):
+        asyncio.run(portal.turn(token, game_id, "look", "orphan-safe"))
+    assert durable_rows() == before
+    assert portal.wallet(token) == wallet
+    assert portal.credit_ledger(token) == ledger
+    assert len(sends) == 1
+
+
+@pytest.mark.parametrize("damage", ["checksum", "identity"])
+def test_corrupt_native_marker_is_invalid(native_portal, monkeypatch, damage):
+    portal, sends = native_portal
+    token, game_id = _save(portal)
+    monkeypatch.setattr(portal.turns.store, "save_generated_scene_snapshot",
+                        lambda snapshot: (_ for _ in ()).throw(RuntimeError("write failure")))
+    with pytest.raises(TurnGenerationUncertain):
+        asyncio.run(portal.turn(token, game_id, "look", "corrupt"))
+    with portal.accounts.engine.begin() as db:
+        db.execute(sql_text("UPDATE generated_scene_generation_markers SET " +
+            ("checksum=:bad" if damage == "checksum" else "marker_id=:bad") +
+            " WHERE game_id=:game"), {"bad": "0" * 64, "game": game_id})
+    assert portal.turn_recovery_status(token, game_id, "corrupt",
+            hashlib.sha256(b"look").hexdigest())["reason_code"] == "EVIDENCE_INVALID"
+    with pytest.raises(TurnRecoveryRequired):
+        asyncio.run(portal.turn(token, game_id, "look", "corrupt"))
+    assert len(sends) == 1
+
+
+def test_uncertain_marker_binding_precedes_generation(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token, game_id = _save(portal)
+    monkeypatch.setattr(portal.turns.store, "save_generated_scene_snapshot",
+                        lambda snapshot: (_ for _ in ()).throw(RuntimeError("write failure")))
+    with pytest.raises(TurnGenerationUncertain):
+        asyncio.run(portal.turn(token, game_id, "first", "bound"))
+    assert portal.turn_recovery_status(token, game_id, "bound",
+            hashlib.sha256(b"other").hexdigest())["reason_code"] == "INPUT_MISMATCH"
+    original_plan = portal.gameplay.factory.scene_recovery_plan
+    monkeypatch.setattr(portal.gameplay.factory, "scene_recovery_plan",
+                        lambda *args: replace(original_plan(*args), generation_identity="0" * 64))
+    assert portal.turn_recovery_status(token, game_id, "bound",
+            hashlib.sha256(b"first").hexdigest())["reason_code"] == "CONFIG_CHANGED"
+    with pytest.raises(TurnRecoveryRequired):
+        asyncio.run(portal.turn(token, game_id, "first", "bound"))
+    assert len(sends) == 1
+
+
+def test_later_request_blocks_uncertain_marker_replay(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token, game_id = _save(portal)
+    monkeypatch.setattr(portal.turns.store, "save_generated_scene_snapshot",
+                        lambda snapshot: (_ for _ in ()).throw(RuntimeError("write failure")))
+    with pytest.raises(TurnGenerationUncertain):
+        asyncio.run(portal.turn(token, game_id, "first", "older-claim"))
+    old = portal.turns.recovery_contexts.get(game_id, "older-claim")
+    portal.turns.recovery_contexts.freeze(
+        player_id=old.player_id, game_id=game_id, request_id="newer-claim",
+        input_hash=hashlib.sha256(b"second").hexdigest(),
+        generation_identity=old.generation_identity,
+        billing_enabled=old.billing_enabled, policy=old.policy())
+    assert portal.turn_recovery_status(token, game_id, "older-claim",
+            hashlib.sha256(b"first").hexdigest())["reason_code"] == "LATER_REQUEST"
+    with pytest.raises(TurnRecoveryRequired):
+        asyncio.run(portal.turn(token, game_id, "first", "older-claim"))
+    assert len(sends) == 1
+
+
+@pytest.mark.parametrize("priority", ["scene", "receipt"])
+def test_qualified_result_precedes_corrupt_marker(native_portal, monkeypatch, priority):
+    portal, sends = native_portal
+    token, game_id = _save(portal)
+    if priority == "scene":
+        original_prepare = portal.turns.settlements.prepare
+        monkeypatch.setattr(portal.turns.settlements, "prepare",
+                            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+        with pytest.raises(RuntimeError, match="offline"):
+            asyncio.run(portal.turn(token, game_id, "look", "priority"))
+        monkeypatch.setattr(portal.turns.settlements, "prepare", original_prepare)
+    else:
+        asyncio.run(portal.turn(token, game_id, "look", "priority"))
+    with portal.accounts.engine.begin() as db:
+        db.execute(sql_text("UPDATE generated_scene_generation_markers SET checksum=:bad "
+                            "WHERE game_id=:game"), {"bad": "0" * 64, "game": game_id})
+    expected = "SCENE_READY" if priority == "scene" else "RECEIPT_READY"
+    assert portal.turn_recovery_status(token, game_id, "priority",
+            hashlib.sha256(b"look").hexdigest())["reason_code"] == expected
+    result = asyncio.run(portal.turn(token, game_id, "look", "priority"))
+    assert result["billing"]["model_calls"] == 1
+    assert len(sends) == 1
+    assert len([row for row in portal.credit_ledger(token) if row["kind"] == "turn"]) == 1
+
+
+def test_native_timeout_keeps_measured_usage_and_original_audit(native_portal, monkeypatch):
+    portal, sends = native_portal
+    token, game_id = _save(portal)
+    requests = []
+
+    async def reply(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return _completion("{}", prompt_tokens=1000, completion_tokens=500)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(OpenAIAsyncClient, "__init__", _OPENAI_INIT)
+    model, transport = sdk_model(monkeypatch, reply, timeout_seconds=0.3)
+    monkeypatch.setattr(portal.gameplay.factory.models, "create_resolved_model",
+                        lambda **kwargs: model)
+    try:
+        with pytest.raises(TurnGenerationUncertain) as caught:
+            asyncio.run(asyncio.wait_for(portal.turn(token, game_id, "look", "timeout"), 10))
+    finally:
+        asyncio.run(model.client.close())
+        asyncio.run(transport.aclose())
+    assert isinstance(caught.value.__cause__, GenerationTimeout)
+    audit = portal.turns.audits.list_for_request(game_id, "timeout")[0]
+    assert audit["outcome"] == "failed"
+    assert audit["error_type"] == "GenerationTimeout"
+    assert audit["attempts"][0]["outcome"] == "failed"
+    assert audit["attempts"][0]["usage_state"] == "reported"
+    assert audit["summary"]["known_input_tokens"] == 1000
+    assert audit["summary"]["known_output_tokens"] == 500
+    assert audit["summary"]["total_cost_milli_points"] is None
+    assert len(requests) >= 2
+    assert sends == []
+
+
+@pytest.mark.parametrize("failure_point", ["guidance", "view"])
+def test_recovered_scene_failure_remains_recoverable(native_portal, monkeypatch, failure_point):
+    portal, sends = native_portal
+    token, game_id = _save(portal)
+    if failure_point == "guidance":
+        async def failed_guidance(*args, **kwargs):
+            raise RuntimeError("guidance offline")
+        with monkeypatch.context() as fault:
+            fault.setattr(GuidanceAdvisor, "advise", failed_guidance)
+            with pytest.raises(RuntimeError, match="guidance offline"):
+                asyncio.run(portal.turn(token, game_id, "look", "recovered"))
+    else:
+        with monkeypatch.context() as fault:
+            fault.setattr(turns_module, "turn_view",
+                          lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("view offline")))
+            with pytest.raises(RuntimeError, match="view offline"):
+                asyncio.run(portal.turn(token, game_id, "look", "recovered"))
+    assert portal.turn_recovery_status(token, game_id, "recovered",
+            hashlib.sha256(b"look").hexdigest())["reason_code"] == "SCENE_READY"
+    result = asyncio.run(portal.turn(token, game_id, "look", "recovered"))
+    assert result["billing"]["model_calls"] == 1
+    assert len(sends) == 1
+    assert len([row for row in portal.credit_ledger(token) if row["kind"] == "turn"]) == 1
+
+
+def test_historical_request_without_marker_keeps_legacy_block(native_portal):
+    portal, sends = native_portal
+    token, game_id = _save(portal)
+    assert portal.turn_recovery_status(token, game_id, "historical",
+            hashlib.sha256(b"look").hexdigest())["reason_code"] == "NO_SNAPSHOT"
+    commit_player_input(portal.gameplay.store, game_id, "portal-historical:input", "look")
+    assert portal.gameplay.store.generated_scene_generation_marker(
+        game_id, "portal-historical") is None
+    assert portal.turn_recovery_status(token, game_id, "historical",
+            hashlib.sha256(b"look").hexdigest())["reason_code"] == "LEGACY_REQUEST"
+    with pytest.raises(TurnRecoveryRequired):
+        asyncio.run(portal.turn(token, game_id, "look", "historical"))
+    assert sends == []
 
 
 def test_inspection_is_read_only(native_portal, monkeypatch):
