@@ -1,36 +1,17 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { removeFixtureDir, requireFreeApiPort, stopOwnedApi } from "./fixtureLifecycle";
 
 const repo = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const fixture = join(repo, "tests", "player_recovery_server.py");
 const python = process.env.STORYLOOP_TEST_PYTHON || "python";
 const health = "http://127.0.0.1:8765/health";
 
-async function requireFreePort(): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const server = createServer();
-    try {
-      await new Promise<void>((done, reject) => {
-        server.once("error", reject);
-        server.listen(8765, "127.0.0.1", done);
-      });
-      await new Promise<void>((done) => server.close(() => done()));
-      return;
-    } catch (error) {
-      server.close();
-      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || attempt === 49)
-        throw new Error("Port 8765 is occupied before recovery acceptance", { cause: error });
-      await new Promise((done) => setTimeout(done, 100));
-    }
-  }
-}
-
 async function startApi(db: string, posts: string, marker: string, fault = "after_snapshot"): Promise<ChildProcess> {
-  await requireFreePort();
+  await requireFreeApiPort();
   const child = spawn(python, [fixture, "--db", db, "--posts", posts,
     "--fault-marker", marker, "--fault", fault], {
     cwd: repo,
@@ -51,15 +32,8 @@ async function startApi(db: string, posts: string, marker: string, fault = "afte
     } catch { /* wait for startup */ }
     await new Promise((done) => setTimeout(done, 100));
   }
-  child.kill();
+  await stopOwnedApi(child);
   throw new Error(`test API did not start: ${output}`);
-}
-
-async function stopApi(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise<void>((done) => child.once("exit", () => done()));
-  child.kill();
-  await exited;
 }
 
 async function completedTurns(page: import("@playwright/test").Page, gameId: string) {
@@ -113,7 +87,7 @@ test("manual recovery replays the original request after API restart and permits
     const originalId = sent[0].request_id;
     expect(originalId).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
 
-    await stopApi(api);
+    await stopOwnedApi(api);
     api = null;
     api = await startApi(db, posts, marker);
     await page.reload();
@@ -136,19 +110,8 @@ test("manual recovery replays the original request after API restart and permits
     expect(readFileSync(posts, "utf8").trim().split("\n")).toHaveLength(2);
   } finally {
     await page.close();
-    if (api) await stopApi(api);
-    if (resolve(temp).startsWith(repo + "\\") || resolve(temp).startsWith(repo + "/")) {
-      try {
-        rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
-        // On Windows the SQLite file is owned by the Python fixture process.
-        const cleanup = spawnSync(python, ["-c",
-          "import pathlib,shutil,sys\np=pathlib.Path(sys.argv[1]).resolve()\nroot=pathlib.Path(sys.argv[2]).resolve()\nif p.parent!=root or not p.name.startswith('.player-recovery-'):\n raise SystemExit('unsafe cleanup path')\nshutil.rmtree(p)",
-          temp, repo], { cwd: repo, encoding: "utf8" });
-        if (cleanup.status !== 0) throw new Error(`Python fixture cleanup failed: ${cleanup.stderr}`);
-      }
-    }
+    if (api) await stopOwnedApi(api);
+    removeFixtureDir(temp, repo, ".player-recovery-", python);
   }
 });
 
@@ -199,17 +162,7 @@ test("native before-snapshot uncertainty keeps one original request locked after
     expect(await page.evaluate((id) => JSON.parse(sessionStorage.getItem(`storyloop.pending.${id}`)!), gameId)).toEqual(saved);
   } finally {
     await page.close();
-    if (api) await stopApi(api);
-    const target = resolve(temp);
-    if (target.startsWith(repo + "\\") || target.startsWith(repo + "/")) {
-      try { rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
-        const cleanup = spawnSync(python, ["-c",
-          "import pathlib,shutil,sys\np=pathlib.Path(sys.argv[1]).resolve()\nroot=pathlib.Path(sys.argv[2]).resolve()\nif p.parent!=root or not p.name.startswith('.player-recovery-'):\n raise SystemExit('unsafe cleanup path')\nshutil.rmtree(p)",
-          temp, repo], { cwd: repo, encoding: "utf8" });
-        if (cleanup.status !== 0) throw new Error(`Python fixture cleanup failed: ${cleanup.stderr}`);
-      }
-    }
+    if (api) await stopOwnedApi(api);
+    removeFixtureDir(temp, repo, ".player-recovery-", python);
   }
 });

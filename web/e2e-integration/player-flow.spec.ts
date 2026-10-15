@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
+import { existsSync, mkdtempSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { removeFixtureDir, requireFreeApiPort, stopOwnedApi } from "./fixtureLifecycle";
 
 const repo = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const fixture = join(repo, "tests", "player_smoke_server.py");
@@ -12,19 +12,6 @@ const localPython = join(repo, ".venv",
 const python = process.env.STORYLOOP_TEST_PYTHON ||
   (existsSync(localPython) ? localPython : "python");
 const health = "http://127.0.0.1:8765/health";
-
-async function requireFreeApiPort(): Promise<void> {
-  const server = createServer();
-  try {
-    await new Promise<void>((done, reject) => {
-      server.once("error", reject);
-      server.listen(8765, "127.0.0.1", done);
-    });
-  } catch (error) {
-    throw new Error("Port 8765 is occupied; stop the existing API before this test", { cause: error });
-  }
-  await new Promise<void>((done) => server.close(() => done()));
-}
 
 async function waitForCompletedTurns(page: import("@playwright/test").Page, gameId: string, count: number) {
   await expect.poll(async () => {
@@ -58,15 +45,8 @@ async function startApi(db: string): Promise<ChildProcess> {
     } catch { /* wait for startup */ }
     await new Promise((done) => setTimeout(done, 100));
   }
-  child.kill();
+  await stopOwnedApi(child);
   throw new Error(`test API did not start: ${output}`);
-}
-
-async function stopApi(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise<void>((done) => child.once("exit", () => done()));
-  child.kill();
-  await exited;
 }
 
 test("player can register, play, restart the API, log in and continue", async ({ page }) => {
@@ -100,7 +80,7 @@ test("player can register, play, restart the API, log in and continue", async ({
     await expect(page.getByText("我走向码头", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "退出登录" }).click();
     await expect(page).toHaveURL(/\/login$/);
-    await stopApi(api);
+    await stopOwnedApi(api);
     api = null;
     api = await startApi(db);
     await page.getByLabel("用户名").fill(username);
@@ -123,7 +103,8 @@ test("player can register, play, restart the API, log in and continue", async ({
     await expect(nextAction).toBeVisible();
     await expect(page.getByText("我询问码头工", { exact: true })).toBeVisible();
   } finally {
-    if (api) await stopApi(api);
-    rmSync(temp, { recursive: true, force: true });
+    await page.close();
+    if (api) await stopOwnedApi(api);
+    removeFixtureDir(temp, repo, ".player-smoke-", python);
   }
 });
