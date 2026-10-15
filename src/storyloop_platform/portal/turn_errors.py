@@ -15,8 +15,18 @@ class TurnRecoveryRequired(ValueError):
     """World work exists without sufficient evidence to settle it safely."""
 
 
+class TurnGenerationUncertain(TurnRecoveryRequired):
+    """A durable generation claim has no qualified result."""
+
+    def __init__(self) -> None:
+        super().__init__("这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。")
+
+
 def turn_failure(error: Exception, request_id: str | None, *,
                  message: str | None = None, code: str = "TURN_FAILED") -> dict:
+    if isinstance(error, TurnGenerationUncertain):
+        return {"code": "GENERATION_UNCERTAIN", "message": str(error),
+                "retryable": False, "commit_state": "unknown", "request_id": request_id}
     if isinstance(error, ExecutionRequestLimitExceeded):
         return {
             "code": "EXECUTION_REQUEST_LIMIT_EXCEEDED",

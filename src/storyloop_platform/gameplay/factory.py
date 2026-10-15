@@ -180,7 +180,8 @@ class RuntimeFactory:
             self.store, package, model,
             max_responders=plan.max_responders, context_budget=plan.context_budget,
             clock=clock, max_steps=plan.max_steps, telemetry=self.telemetry,
-            generated_scene_recovery=GeneratedSceneRecovery(self.store, plan.generation_identity),
+            generated_scene_recovery=GeneratedSceneRecovery(
+                self.store, plan.generation_identity, protect_uncertain_generation=True),
         )
         self._turn_engines[key] = engine
         if len(self._turn_engines) > 128:

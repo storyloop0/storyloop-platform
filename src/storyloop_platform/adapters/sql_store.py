@@ -11,7 +11,8 @@ from sqlalchemy.exc import IntegrityError
 
 from storyloop_harness.advanced import (
     AgentContextCheckpoint, AgentContextEntry, GeneratedSceneConflict,
-    GeneratedSceneCorrupt, GeneratedSceneSnapshot, Observation, PendingWork,
+    GeneratedSceneCorrupt, GeneratedSceneGenerationMarker, GeneratedSceneSnapshot,
+    Observation, PendingWork,
     PlayerInput, Snapshot, WorldEvent, apply_event, validate_checkpoint,
     validate_event_snapshot_reference,
 )
@@ -90,6 +91,50 @@ class SQLGameStore:
     def generated_scene_snapshot(self, game_id: str, turn_id: str) -> GeneratedSceneSnapshot | None:
         with self.engine.connect() as db:
             return self._generated_scene_snapshot(db, game_id, turn_id)
+
+    @staticmethod
+    def _generated_scene_generation_marker(
+            db, game_id: str, turn_id: str) -> GeneratedSceneGenerationMarker | None:
+        row = db.execute(text("""SELECT marker_id,canonical_json,checksum
+            FROM generated_scene_generation_markers WHERE game_id=:game_id AND turn_id=:turn_id"""),
+            {"game_id": game_id, "turn_id": turn_id}).mappings().first()
+        if row is None:
+            return None
+        record = GeneratedSceneGenerationMarker.from_storage(row["canonical_json"], row["checksum"])
+        if (record.marker_id, record.game_id, record.turn_id) != (
+                row["marker_id"], game_id, turn_id):
+            raise GeneratedSceneCorrupt("generated scene generation marker row identity mismatch")
+        return record
+
+    def generated_scene_generation_marker(
+            self, game_id: str, turn_id: str) -> GeneratedSceneGenerationMarker | None:
+        with self.engine.connect() as db:
+            return self._generated_scene_generation_marker(db, game_id, turn_id)
+
+    def create_generated_scene_generation_marker(
+            self, marker: GeneratedSceneGenerationMarker) -> bool:
+        record = GeneratedSceneGenerationMarker.from_storage(marker.canonical_json, marker.checksum)
+        if record != marker:
+            raise GeneratedSceneCorrupt("generated scene generation marker wrapper mismatch")
+        created = False
+        with self.engine.begin() as db:
+            if db.dialect.name == "sqlite":
+                db.exec_driver_sql("BEGIN IMMEDIATE")
+            lock = " FOR UPDATE" if db.dialect.name == "postgresql" else ""
+            game = db.execute(text("SELECT game_id FROM games WHERE game_id=:game_id" + lock),
+                              {"game_id": record.game_id}).first()
+            if game is None:
+                raise KeyError(record.game_id)
+            prior = self._generated_scene_generation_marker(db, record.game_id, record.turn_id)
+            if prior is None:
+                db.execute(text("""INSERT INTO generated_scene_generation_markers
+                    (game_id,turn_id,marker_id,canonical_json,checksum)
+                    VALUES (:game_id,:turn_id,:marker_id,:canonical_json,:checksum)"""),
+                    {"game_id": record.game_id, "turn_id": record.turn_id,
+                     "marker_id": record.marker_id, "canonical_json": record.canonical_json,
+                     "checksum": record.checksum})
+                created = True
+        return created
 
     def save_generated_scene_snapshot(self, snapshot: GeneratedSceneSnapshot) -> GeneratedSceneSnapshot:
         record = GeneratedSceneSnapshot.from_storage(snapshot.canonical_json, snapshot.checksum)

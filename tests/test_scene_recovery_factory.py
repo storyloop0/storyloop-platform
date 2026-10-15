@@ -119,7 +119,9 @@ def test_recovery_only_never_constructs_model_and_does_not_reuse_warm_normal_eng
     factory.models.create_resolved_model = Mock(side_effect=AssertionError("client construction"))
     recovery = factory.scene_recovery_engine(item, package, game_id, plan=plan, recovery_only=True)
     assert recovery is not normal
-    assert recovery.generated_scene_recovery == GeneratedSceneRecovery(factory.store, plan.generation_identity)
+    assert recovery.generated_scene_recovery == GeneratedSceneRecovery(
+        factory.store, plan.generation_identity, protect_uncertain_generation=True)
+    assert normal.generated_scene_recovery.protect_uncertain_generation is True
     assert recovery.session.projector.context_budget == plan.context_budget
     assert factory.scene_recovery_engine(item, package, game_id, plan=plan, recovery_only=True) is recovery
     factory.models.api_key.assert_not_called()

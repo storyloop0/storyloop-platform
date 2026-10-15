@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseTurnRecoveryStatus, ContractError } from "../src/lib/contracts.ts";
-import { allowRecovery, inputHash, matchesRecovery, upsertCompletedTurn } from "../src/lib/turnRecovery.ts";
+import { allowRecovery, blockPendingFromRecovery, inputHash, matchesRecovery, upsertCompletedTurn } from "../src/lib/turnRecovery.ts";
 
 const ready = { request_id: "request-1", status: "recoverable", can_recover: true, reason_code: "SCENE_READY" };
 
@@ -10,7 +10,7 @@ test("strict status parser accepts only the frozen combinations and matching req
   for (const [status, can_recover, reason_code] of [
     ["complete", true, "RECEIPT_READY"],
     ["recoverable", true, "PREPARED_READY"], ["recoverable", true, "SCENE_READY"],
-    ...["INPUT_MISMATCH", "LATER_REQUEST", "EVIDENCE_INVALID", "CONFIG_CHANGED", "USAGE_UNAVAILABLE", "LEGACY_REQUEST"]
+    ...["INPUT_MISMATCH", "LATER_REQUEST", "EVIDENCE_INVALID", "CONFIG_CHANGED", "USAGE_UNAVAILABLE", "LEGACY_REQUEST", "GENERATION_UNCERTAIN"]
       .map((reason) => ["blocked", false, reason]),
     ["not_available", false, "NO_SNAPSHOT"], ["not_available", false, "UNSUPPORTED"],
   ]) assert.doesNotThrow(() => parseTurnRecoveryStatus({ request_id: "request-1", status, can_recover, reason_code }, "request-1"));
@@ -34,6 +34,21 @@ test("positive status grants a manual action only for its live pending identity"
   assert.equal(matchesRecovery(proof, "game-a", { id: "request-1", text: "changed" }, 2, false), false);
   assert.equal(matchesRecovery(proof, "game-a", { id: "request-1", text: " unchanged " }, 3, false), false);
   assert.equal(matchesRecovery(proof, "game-a", { id: "request-1", text: " unchanged " }, 2, true), false);
+});
+
+test("uncertainty preserves the request and makes retry impossible", () => {
+  const pending = { id: "same", text: "look at the harbor" };
+  const blocked = blockPendingFromRecovery(pending, {
+    request_id: "same", status: "blocked", can_recover: false,
+    reason_code: "GENERATION_UNCERTAIN",
+  });
+  assert.deepEqual(blocked, { ...pending, retryable: false,
+    error: "这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。" });
+  assert.equal(blockPendingFromRecovery(pending, { request_id: "other", status: "blocked",
+    can_recover: false, reason_code: "GENERATION_UNCERTAIN" }), pending);
+  assert.equal(blockPendingFromRecovery(blocked, ready), blocked);
+  assert.equal(blockPendingFromRecovery(blocked, { request_id: "same", status: "complete",
+    can_recover: true, reason_code: "RECEIPT_READY" }), blocked);
 });
 
 test("hash uses unchanged UTF-8 input", async () => {

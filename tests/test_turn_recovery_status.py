@@ -14,7 +14,7 @@ VALID = [
     ("recoverable", True, "SCENE_READY"),
     *(("blocked", False, reason) for reason in (
         "INPUT_MISMATCH", "LATER_REQUEST", "EVIDENCE_INVALID", "CONFIG_CHANGED",
-        "USAGE_UNAVAILABLE", "LEGACY_REQUEST")),
+        "USAGE_UNAVAILABLE", "LEGACY_REQUEST", "GENERATION_UNCERTAIN")),
     ("not_available", False, "NO_SNAPSHOT"),
     ("not_available", False, "UNSUPPORTED"),
 ]

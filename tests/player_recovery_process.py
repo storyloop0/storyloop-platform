@@ -65,11 +65,13 @@ def append_post(path: Path) -> None:
         os.fsync(stream.fileno())
 
 
-def offline_transport(post_log: Path):
+def offline_transport(post_log: Path, *, exit_during_request: bool = False):
     def reply(request):
         assert request.method == "POST"
         assert request.url.path.endswith("/chat/completions")
         append_post(post_log)
+        if exit_during_request:
+            os._exit(73)
         decision = {
             "prose": "The dockhand lowers the rope and turns toward me.",
             "participants": ["dockhand"],
@@ -95,7 +97,22 @@ def offline_transport(post_log: Path):
 
 def install_boundary(portal, boundary: str, *, saved_usage_missing: bool = False) -> None:
     store = portal.turns.store
-    if boundary == "after_snapshot":
+    if boundary == "after_marker":
+        original = store.create_generated_scene_generation_marker
+
+        def exit_after_marker(marker):
+            result = original(marker)
+            if result is True:
+                os._exit(73)
+            return result
+
+        store.create_generated_scene_generation_marker = exit_after_marker
+    elif boundary == "before_snapshot":
+        def exit_before_snapshot(snapshot):
+            os._exit(73)
+
+        store.save_generated_scene_snapshot = exit_before_snapshot
+    elif boundary == "after_snapshot":
         original = store.save_generated_scene_snapshot
 
         def exit_after_snapshot(snapshot):
@@ -160,7 +177,8 @@ def install_exception_fault(portal, fault: str) -> None:
 
 async def run(args) -> None:
     data = json.loads(args.state.read_text(encoding="utf-8")) if args.state.exists() else {}
-    transport = offline_transport(args.posts)
+    transport = offline_transport(
+        args.posts, exit_during_request=args.mode == "crash" and args.boundary == "during_request")
     original_init = OpenAIAsyncClient.__init__
 
     def sdk_init(client, *positional, **keywords):
@@ -222,7 +240,15 @@ async def run(args) -> None:
                 else:
                     install_boundary(portal, args.boundary,
                                      saved_usage_missing=args.saved_usage_missing)
-            result = await portal.turn(data["token"], data["game_id"], TEXT, REQUEST_ID)
+            if args.mode == "resume":
+                from storyloop_platform.portal.turn_errors import TurnGenerationUncertain, turn_failure
+                try:
+                    result = await portal.turn(data["token"], data["game_id"], TEXT, REQUEST_ID)
+                except TurnGenerationUncertain as error:
+                    print(json.dumps({"failure": turn_failure(error, REQUEST_ID)}), flush=True)
+                    return
+            else:
+                result = await portal.turn(data["token"], data["game_id"], TEXT, REQUEST_ID)
             print(json.dumps({"view": result,
                               "ledger": (portal.credit_ledger(data["token"])
                                          if portal.billing is not None else []),
@@ -241,7 +267,8 @@ def main() -> None:
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--posts", type=Path, required=True)
-    parser.add_argument("--boundary", choices=("after_snapshot", "after_input",
+    parser.add_argument("--boundary", choices=("after_marker", "during_request",
+                                               "before_snapshot", "after_snapshot", "after_input",
                                                "after_timed_cue"),
                         default="after_snapshot")
     parser.add_argument("--price", default="2")

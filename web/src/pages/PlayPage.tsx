@@ -13,7 +13,7 @@ import { containsStoryCommand, isStoryCommandInput, playerFacingText, storyLineB
 import { clearPendingTurn, discardUnstartedTurn, readPendingTurn, savePendingTurn } from "../lib/pendingTurn";
 import { createRequestId } from "../lib/requestId";
 import { limitTurnInput } from "../lib/turnInput";
-import { allowRecovery, inputHash, matchesRecovery, upsertCompletedTurn, type RecoveryProof } from "../lib/turnRecovery";
+import { allowRecovery, blockPendingFromRecovery, inputHash, matchesRecovery, upsertCompletedTurn, type RecoveryProof } from "../lib/turnRecovery";
 
 function playerAction(text: string | null, previous: View | null | undefined) {
   if (!text) return "早期存档的行动记录不可用";
@@ -168,6 +168,12 @@ export function PlayPage() {
       })
       .then((status) => {
         if (!status || controller.signal.aborted || recoveryGeneration.current !== generation || sendingRef.current) return;
+        const blocked = blockPendingFromRecovery({ id: requestId, text }, status);
+        if (blocked.retryable === false) {
+          savePendingTurn(gameId, blocked);
+          setPending((previous) => previous && previous.id === requestId && previous.text === text
+            ? { ...previous, retryable: false, error: blocked.error ?? previous.error } : previous);
+        }
         setRecoveryProof({ gameId, requestId, text, generation, status });
       })
       .catch(() => {

@@ -15,7 +15,13 @@ export type RequestId1 = string;
 export type Status1 = "recoverable";
 export type CanRecover2 = false;
 export type ReasonCode2 =
-  "INPUT_MISMATCH" | "LATER_REQUEST" | "EVIDENCE_INVALID" | "CONFIG_CHANGED" | "USAGE_UNAVAILABLE" | "LEGACY_REQUEST";
+  | "INPUT_MISMATCH"
+  | "LATER_REQUEST"
+  | "EVIDENCE_INVALID"
+  | "CONFIG_CHANGED"
+  | "USAGE_UNAVAILABLE"
+  | "LEGACY_REQUEST"
+  | "GENERATION_UNCERTAIN";
 export type RequestId2 = string;
 export type Status2 = "blocked";
 export type CanRecover3 = false;

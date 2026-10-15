@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from storyloop_platform.portal.http_api import create_app
 from storyloop_platform.config import load_settings
 from storyloop_platform.bootstrap import build_portal
-from storyloop_platform.portal.turn_errors import turn_failure
+from storyloop_platform.portal.turn_errors import turn_failure, TurnGenerationUncertain
 from storyloop_harness.generation import GenerationRequestLimitExceeded, GenerationTimeout
 from runtime_fakes import OfflineRuntimeFactory
 from committed_input import commit_player_input
@@ -19,6 +19,14 @@ from test_scenario_lifecycle_concurrency import archive
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_uncertain_failure_overrides_unsafe_handler_copy():
+    assert turn_failure(TurnGenerationUncertain(), "same", message="unsafe",
+                        code="MODEL_UNAVAILABLE") == {
+        "code": "GENERATION_UNCERTAIN",
+        "message": "这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。",
+        "retryable": False, "commit_state": "unknown", "request_id": "same"}
 
 
 @pytest.mark.parametrize("error,code,message", [

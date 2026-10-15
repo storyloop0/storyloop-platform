@@ -17,7 +17,7 @@ from storyloop_platform.bootstrap import build_portal
 from storyloop_platform.config import load_settings
 from storyloop_platform.portal.http_api import create_app
 from storyloop_platform.portal.billing import record_model_usage
-from storyloop_platform.portal.turn_errors import TurnRecoveryRequired
+from storyloop_platform.portal.turn_errors import TurnRecoveryRequired, TurnGenerationUncertain
 from storyloop_platform.runtime.guidance import GuidanceAdvisor
 from storyloop_harness.advanced import PendingWork
 from storyloop_platform.portal.turn_errors import TurnInputError
@@ -609,12 +609,14 @@ def test_missing_reported_usage_blocks_before_scene_is_saved(native_portal, monk
         return Response(200, json=payload)
 
     monkeypatch.setattr(__import__(__name__), "_completion", no_usage)
-    with pytest.raises(RuntimeError, match="did not report token usage"):
+    with pytest.raises(TurnGenerationUncertain) as caught:
         asyncio.run(portal.turn(token, game_id, "unknown", "missing"))
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert "did not report token usage" in str(caught.value.__cause__)
     saved = portal.gameplay.store.generated_scene_snapshot(game_id, "portal-missing")
     assert saved is None
     assert portal.turn_recovery_status(token, game_id, "missing",
-            hashlib.sha256(b"unknown").hexdigest())["reason_code"] == "NO_SNAPSHOT"
+            hashlib.sha256(b"unknown").hexdigest())["reason_code"] == "GENERATION_UNCERTAIN"
     assert len(sends) == 1
 
 
