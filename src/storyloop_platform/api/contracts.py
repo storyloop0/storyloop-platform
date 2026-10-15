@@ -158,7 +158,8 @@ class BlockedTurnRecoveryStatus(RecoveryStatusContract):
     status: Literal["blocked"]
     can_recover: Literal[False]
     reason_code: Literal["INPUT_MISMATCH", "LATER_REQUEST", "EVIDENCE_INVALID",
-                         "CONFIG_CHANGED", "USAGE_UNAVAILABLE", "LEGACY_REQUEST"]
+                         "CONFIG_CHANGED", "USAGE_UNAVAILABLE", "LEGACY_REQUEST",
+                         "GENERATION_UNCERTAIN"]
 
 
 class UnavailableTurnRecoveryStatus(RecoveryStatusContract):

@@ -7,7 +7,7 @@ from typing import Literal
 
 from sqlalchemy import text
 from storyloop_harness import ScenarioPackage
-from storyloop_harness.advanced import snapshot_state_fingerprint
+from storyloop_harness.advanced import GeneratedSceneUncertain, snapshot_state_fingerprint
 
 from storyloop_platform.api.contracts import View
 from storyloop_platform.gameplay.scene_recovery import SceneRecoveryPlan, SceneRecoveryRuntime
@@ -16,7 +16,7 @@ from storyloop_platform.portal.turn_recovery_contexts import TurnRecoveryContext
 
 Reason = Literal["RECEIPT_READY", "PREPARED_READY", "SCENE_READY", "INPUT_MISMATCH",
                  "LATER_REQUEST", "EVIDENCE_INVALID", "CONFIG_CHANGED", "USAGE_UNAVAILABLE",
-                 "LEGACY_REQUEST", "NO_SNAPSHOT", "UNSUPPORTED"]
+                 "LEGACY_REQUEST", "NO_SNAPSHOT", "UNSUPPORTED", "GENERATION_UNCERTAIN"]
 
 
 @dataclass(frozen=True)
@@ -78,8 +78,11 @@ def inspect_scene(*, store, factory, contexts, game_id: str, request_id: str,
     if plan is None or plan.generation_identity != context.generation_identity:
         return RecoveryQualification("CONFIG_CHANGED")
     engine = factory.scene_recovery_engine(item, package, game_id, plan=plan, recovery_only=True)
-    inspection = engine.inspect_generated_scene_recovery_fingerprint(
-        game_id, context.turn_id, input_hash, package.version)
+    try:
+        inspection = engine.inspect_generated_scene_recovery_fingerprint(
+            game_id, context.turn_id, input_hash, package.version)
+    except GeneratedSceneUncertain:
+        return RecoveryQualification("GENERATION_UNCERTAIN", context=context, plan=plan)
     if inspection is None:
         current = store.load(game_id)
         if (current.version != context.base_version or current.tick != context.base_tick or

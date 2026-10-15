@@ -39,6 +39,43 @@ def rows(db_path: Path, table: str, where: str) -> list[dict]:
         engine.dispose()
 
 
+@pytest.mark.parametrize("boundary,count", [("after_marker", 0),
+                                           ("during_request", 1),
+                                           ("before_snapshot", 1)])
+def test_generation_claim_survives_process_exit(tmp_path: Path, boundary: str, count: int):
+    assert child(tmp_path, "seed").returncode == 0
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    crashed = child(tmp_path, "crash", "--boundary", boundary)
+    assert crashed.returncode == 73, crashed.stderr
+    log = tmp_path / "posts.log"
+    initial = log.read_bytes().splitlines() if log.exists() else []
+    assert initial == [b"POST"] * count
+    inspected = child(tmp_path, "status")
+    assert inspected.returncode == 0, inspected.stderr
+    assert json.loads(inspected.stdout)["status"] == {
+        "request_id": "process-recovery", "status": "blocked",
+        "can_recover": False, "reason_code": "GENERATION_UNCERTAIN"}
+    for _ in range(2):
+        resumed = child(tmp_path, "resume")
+        assert resumed.returncode == 0, resumed.stderr
+        failure = json.loads(resumed.stdout)["failure"]
+        assert failure == {
+            "code": "GENERATION_UNCERTAIN",
+            "message": "这条行动的生成结果暂时无法确认，已停止重试。请保留此请求并联系管理员。",
+            "retryable": False, "commit_state": "unknown",
+            "request_id": "process-recovery"}
+    assert (log.read_bytes().splitlines() if log.exists() else []) == initial
+    db = tmp_path / "world.sqlite3"
+    game = state["game_id"]
+    assert len(rows(db, "generated_scene_generation_markers", f"game_id = '{game}'")) == 1
+    assert not rows(db, "generated_scene_snapshots", f"game_id = '{game}'")
+    assert not rows(db, "portal_turns", f"game_id = '{game}'")
+    assert not rows(db, "credit_ledger", f"game_id = '{game}' AND kind = 'turn'")
+    assert not rows(db, "player_memory_inputs", f"game_id = '{game}'")
+    assert not [row for row in rows(db, "events", f"game_id = '{game}'")
+                if row["event_id"].startswith("portal-process-recovery:")]
+
+
 @pytest.mark.parametrize("boundary", ["after_snapshot", "after_input", "after_timed_cue"])
 def test_native_scene_recovery_after_hard_process_exit(tmp_path: Path, boundary: str):
     seeded = child(tmp_path, "seed")

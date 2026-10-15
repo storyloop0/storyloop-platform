@@ -29,7 +29,7 @@ from storyloop_platform.portal.moderation import ScenarioModerationService
 from storyloop_platform.portal.model_execution_audits import SQLModelExecutionAudits
 from storyloop_platform.portal.sql_billing import SQLBillingRepository
 from storyloop_platform.portal.sql_repository import SQLPlayerRepository
-from storyloop_platform.portal.turn_errors import TurnInputError, TurnRecoveryRequired
+from storyloop_platform.portal.turn_errors import TurnInputError, TurnRecoveryRequired, TurnGenerationUncertain
 from storyloop_platform.portal.turn_settlements import SQLTurnSettlements, TurnSettlement
 from storyloop_platform.portal.turn_recovery_contexts import SQLTurnRecoveryContexts, TurnRecoveryContextError
 from storyloop_platform.runtime.guidance import GuidanceAdvisor, GuidanceResult
@@ -81,6 +81,8 @@ class TurnExecutionService:
             context = self.recovery_contexts.get(game_id, request_id)
             turn_id = "portal-" + request_id
             if context is None:
+                if self.store.generated_scene_generation_marker(game_id, turn_id) is not None:
+                    return RecoveryQualification("EVIDENCE_INVALID").status(request_id)
                 if self.store.generated_scene_snapshot(game_id, turn_id) is not None or any(
                     self.store.event_exists(game_id, f"{turn_id}:{kind}")
                     for kind in ("input", "query", "action", "continue", "choice", "advance", "completed")
@@ -139,9 +141,31 @@ class TurnExecutionService:
                 and isinstance(self.factory, SceneRecoveryRuntime)):
             plan = self.factory.scene_recovery_plan(item, package, game_id)
             if plan is not None:
-                return await self._controlled_turn(player_id, game_id, text, request_id,
-                                                   progress, item, package, plan, memory_epoch)
+                try:
+                    return await self._controlled_turn(player_id, game_id, text, request_id,
+                                                       progress, item, package, plan, memory_epoch)
+                except TurnGenerationUncertain:
+                    raise
+                except Exception as error:
+                    try:
+                        status = self.recovery_status(player_id, game_id, request_id,
+                                                      sha256(text.encode()).hexdigest())
+                    except Exception:
+                        status = None
+                    if status is not None and status["reason_code"] == "GENERATION_UNCERTAIN":
+                        raise TurnGenerationUncertain() from error
+                    raise
         turn_id = f"portal-{request_id}"
+        # An existing controlled request must never fall through to an unprotected engine.
+        context = self.recovery_contexts.get(game_id, request_id)
+        if context is not None:
+            raise TurnRecoveryRequired("行动恢复配置已变更，请联系管理员恢复此回合。")
+        try:
+            marker = self.store.generated_scene_generation_marker(game_id, turn_id)
+        except ValueError as error:
+            raise TurnRecoveryRequired("行动恢复证据无效，请联系管理员恢复。") from error
+        if marker is not None:
+            raise TurnRecoveryRequired("行动恢复证据不完整，请联系管理员恢复此回合。")
         committed_same_turn = any(self.store.event_exists(game_id, f"{turn_id}:{kind}")
                                   for kind in ("input", "query", "action", "continue",
                                                "choice", "advance", "completed"))
@@ -272,6 +296,13 @@ class TurnExecutionService:
             existing_scene = self.store.generated_scene_snapshot(game_id, turn_id)
         except ValueError as error:
             raise TurnRecoveryRequired("保存的场景证据无效，请联系管理员恢复。") from error
+        if context is None:
+            try:
+                marker = self.store.generated_scene_generation_marker(game_id, turn_id)
+            except ValueError as error:
+                raise TurnRecoveryRequired("行动恢复证据无效，请联系管理员恢复。") from error
+            if marker is not None:
+                raise TurnRecoveryRequired("行动恢复证据不完整，请联系管理员恢复此回合。")
         if context is None and (existing_scene is not None or any(
                 self.store.event_exists(game_id, f"{turn_id}:{kind}") for kind in
                 ("input", "query", "action", "continue", "choice", "advance", "completed"))):
@@ -290,6 +321,8 @@ class TurnExecutionService:
                                           plan=plan)
             except ValueError as error:
                 raise TurnRecoveryRequired("行动恢复证据无效，请联系管理员恢复。") from error
+            if qualified.reason == "GENERATION_UNCERTAIN":
+                raise TurnGenerationUncertain()
             if qualified.reason not in ("SCENE_READY", "NO_SNAPSHOT"):
                 raise TurnRecoveryRequired("行动恢复证据不完整，请联系管理员恢复此回合。")
             if qualified.reason == "NO_SNAPSHOT" and existing_scene is not None:
