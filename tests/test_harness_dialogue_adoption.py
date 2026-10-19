@@ -7,7 +7,9 @@ from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import text as sql_text
 from storyloop_harness import ScenarioPackage, TurnEngine, TurnInput
+from storyloop_harness.advanced import GeneratedSceneSnapshot
 
 from storyloop_platform.gameplay import factory as factory_module
 from storyloop_platform.portal.turn_errors import TurnGenerationUncertain
@@ -16,6 +18,24 @@ from storyloop_platform.config import load_settings
 import test_player_scene_recovery as recovery_fixture
 from test_player_scene_recovery import native_portal
 from scenario_fixtures import source_package
+from legacy_scene_fixture import legacy_scene_record
+
+
+def _persist_legacy_scene(portal, game_id: str, request_id: str) -> GeneratedSceneSnapshot:
+    turn_id = "portal-" + request_id
+    saved = portal.gameplay.store.generated_scene_snapshot(game_id, turn_id)
+    assert saved is not None
+    legacy = legacy_scene_record(saved)
+    assert legacy.metadata()["generation_contract_version"] == 1
+    assert "beats" not in legacy.metadata()["scene"]
+    with portal.accounts.engine.begin() as db:
+        db.execute(sql_text("""UPDATE generated_scene_snapshots
+            SET snapshot_id=:snapshot_id,canonical_json=:canonical_json,checksum=:checksum
+            WHERE game_id=:game_id AND turn_id=:turn_id"""),
+            {"snapshot_id": legacy.snapshot_id, "canonical_json": legacy.canonical_json,
+             "checksum": legacy.checksum, "game_id": game_id, "turn_id": turn_id})
+    assert portal.gameplay.store.generated_scene_snapshot(game_id, turn_id) == legacy
+    return legacy
 
 
 def test_old_unfinished_scene_keeps_original_request_and_blocks_resend(native_portal, monkeypatch):
@@ -24,6 +44,8 @@ def test_old_unfinished_scene_keeps_original_request_and_blocks_resend(native_po
     game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
     request_id = "old-scene"
     player_text = "look"
+    wallet_before = portal.wallet(token)
+    ledger_before = portal.credit_ledger(token)
 
     with monkeypatch.context() as old_runtime:
         old_runtime.setattr(factory_module, "PLATFORM_SCENE_CONTRACT", "platform-ordinary-scene-v1")
@@ -31,11 +53,19 @@ def test_old_unfinished_scene_keeps_original_request_and_blocks_resend(native_po
                             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
         with pytest.raises(RuntimeError, match="offline"):
             asyncio.run(portal.turn(token, game_id, player_text, request_id))
+    _persist_legacy_scene(portal, game_id, request_id)
     old_context = portal.turns.recovery_contexts.get(game_id, request_id)
     old_snapshot = portal.gameplay.store.generated_scene_snapshot(game_id, "portal-" + request_id)
     before = portal.gameplay.store.load(game_id)
     assert old_context is not None and old_snapshot is not None
+    assert old_context.input_hash == hashlib.sha256(player_text.encode()).hexdigest()
+    assert old_snapshot.metadata()["generation_contract_version"] == 1
+    assert old_snapshot.metadata()["scene"]["replies"][0]["speech"] == "The morning boat is due soon."
     assert len(sends) == 1
+    with portal.accounts.engine.connect() as db:
+        old_row = db.execute(sql_text("""SELECT snapshot_id,canonical_json,checksum
+            FROM generated_scene_snapshots WHERE game_id=:game_id AND turn_id=:turn_id"""),
+            {"game_id": game_id, "turn_id": "portal-" + request_id}).one()
     fingerprint = hashlib.sha256(player_text.encode()).hexdigest()
     assert portal.turn_recovery_status(token, game_id, request_id, fingerprint) == {
         "request_id": request_id, "status": "blocked", "can_recover": False,
@@ -44,7 +74,13 @@ def test_old_unfinished_scene_keeps_original_request_and_blocks_resend(native_po
         asyncio.run(portal.turn(token, game_id, player_text, request_id))
     assert portal.turns.recovery_contexts.get(game_id, request_id) == old_context
     assert portal.gameplay.store.generated_scene_snapshot(game_id, "portal-" + request_id) == old_snapshot
+    with portal.accounts.engine.connect() as db:
+        assert db.execute(sql_text("""SELECT snapshot_id,canonical_json,checksum
+            FROM generated_scene_snapshots WHERE game_id=:game_id AND turn_id=:turn_id"""),
+            {"game_id": game_id, "turn_id": "portal-" + request_id}).one() == old_row
     assert portal.gameplay.store.load(game_id) == before
+    assert portal.wallet(token) == wallet_before
+    assert portal.credit_ledger(token) == ledger_before
     assert portal.turns.settlements.get(game_id, request_id, player_text) is None
     assert len(sends) == 1
 
@@ -56,10 +92,34 @@ def test_completed_old_identity_replays_cached_receipt_after_upgrade(native_port
     with monkeypatch.context() as old_runtime:
         old_runtime.setattr(factory_module, "PLATFORM_SCENE_CONTRACT", "platform-ordinary-scene-v1")
         completed = asyncio.run(portal.turn(token, game_id, "look", "completed-old"))
+    legacy = _persist_legacy_scene(portal, game_id, "completed-old")
+    old_receipt = {**completed,
+                   "body": "The dockhand sets down a rope.\n\nThe morning boat is due soon.",
+                   "segments": [{"kind": "scene", "text": "The dockhand sets down a rope."},
+                                {"kind": "dialogue", "text": "The morning boat is due soon.",
+                                 "speaker_id": "dockhand", "speaker_name": "一位嘉宾"}]}
+    with portal.accounts.engine.begin() as db:
+        event_id = "portal-completed-old:input"
+        details = json.loads(db.execute(sql_text("""SELECT details FROM events
+            WHERE game_id=:game_id AND event_id=:event_id"""),
+            {"game_id": game_id, "event_id": event_id}).scalar_one())
+        details["single_call"] = legacy.metadata()["scene"]
+        details["generated_scene_snapshot_id"] = legacy.snapshot_id
+        details["generated_scene_snapshot_checksum"] = legacy.checksum
+        db.execute(sql_text("""UPDATE events SET details=:details
+            WHERE game_id=:game_id AND event_id=:event_id"""),
+            {"details": json.dumps(details, ensure_ascii=False), "game_id": game_id,
+             "event_id": event_id})
+        db.execute(sql_text("""UPDATE portal_turns SET response_json=:response
+            WHERE game_id=:game_id AND request_id=:request_id"""),
+            {"response": json.dumps(old_receipt, ensure_ascii=False), "game_id": game_id,
+             "request_id": "completed-old"})
     wallet = portal.wallet(token)
+    assert portal.gameplay.store.event_details(game_id, "portal-completed-old:input")["single_call"] == legacy.metadata()["scene"]
+    assert portal.history(token, game_id)["turns"][-1]["response"] == old_receipt
     assert portal.turn_recovery_status(token, game_id, "completed-old",
             hashlib.sha256(b"look").hexdigest())["reason_code"] == "RECEIPT_READY"
-    assert asyncio.run(portal.turn(token, game_id, "look", "completed-old")) == completed
+    assert asyncio.run(portal.turn(token, game_id, "look", "completed-old")) == old_receipt
     assert portal.wallet(token) == wallet
     assert len(sends) == 1
 
