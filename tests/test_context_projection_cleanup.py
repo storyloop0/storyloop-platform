@@ -61,8 +61,9 @@ def test_current_http_turn_uses_scene_projection_and_settles_once_with_only_acti
         for task in ('single_turn', 'narration', 'followup_actions')}})
     portal.gameplay.factory.settings = portal.settings
     model = StructuredOfflineModel(lambda _: {
-        'prose': '你听见码头工放下缆绳。', 'participants': ['dockhand'],
-        'replies': [{'actor_id': 'dockhand', 'speech': '今天有船靠岸。'}],
+        'beats': [{'kind': 'narration', 'text': '你听见码头工放下缆绳。'},
+                  {'kind': 'dialogue', 'actor_id': 'dockhand', 'text': '今天有船靠岸。'}],
+        'participants': ['dockhand'],
     }, input_tokens=100, output_tokens=50)
     portal.gameplay.factory.offline_models.model = model
     token = portal.register('scene-reader', 'password-123')['token']

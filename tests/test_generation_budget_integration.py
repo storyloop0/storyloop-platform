@@ -34,14 +34,14 @@ def _completion(arguments: str, *, prompt_tokens: int = 1000, completion_tokens:
     })
 
 
-def test_factory_model_through_engine_retains_failed_attempt_usage_observations(
+def test_factory_model_through_engine_limits_transport_retries_without_usage(
     monkeypatch, tmp_path
 ):
     requests = []
 
     def invalid(request):
         requests.append(request)
-        return _completion("{}")
+        return Response(503, json={"error": {"message": "offline", "type": "server_error"}})
 
     original_init = OpenAIAsyncClient.__init__
     transport = HttpAsyncClient(transport=MockTransport(invalid))
@@ -80,16 +80,8 @@ def test_factory_model_through_engine_retains_failed_attempt_usage_observations(
     attempts = asyncio.run(run())
     assert len(requests) == 2
     reported = [attempt.usage for attempt in attempts if attempt.usage is not None]
-    assert reported == [
-        ModelUsage(model.model, "single_turn", 1000, 500)
-    ] * 2
-    # This is the price of observed provider usage, not a failed-turn settlement.
-    policy = BillingPolicy.from_dict({
-        "welcome_points": 500, "points_per_rmb": 50, "pricing_version": "offline",
-        "models": {model.model: {"input_rmb_per_million": "1",
-                                  "output_rmb_per_million": "2"}},
-    }, {"single_turn": model.model})
-    assert policy.price_milli_points(reported) == 200
+    assert reported == []
+    # Transport failures have no reported usage and cannot be priced as zero.
     assert store.load("game") == before
     assert not store.event_exists("game", "budget-turn:input")
 
@@ -102,8 +94,8 @@ def test_factory_model_engine_fallback_bills_successful_response_as_before(
     def fallback(request):
         requests.append(request)
         if len(requests) == 1:
-            return _completion("{}", prompt_tokens=1000, completion_tokens=500)
-        return _completion('{"prose":"A quiet harbor."}',
+            return Response(503, json={"error": {"message": "offline", "type": "server_error"}})
+        return _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}',
                            prompt_tokens=1200, completion_tokens=600)
 
     original_init = OpenAIAsyncClient.__init__
@@ -138,8 +130,7 @@ def test_factory_model_engine_fallback_bills_successful_response_as_before(
     assert len(requests) == 2
     assert [attempt.outcome for attempt in attempts] == ["failed", "succeeded"]
     assert [attempt.usage for attempt in attempts] == [
-        ModelUsage(model.model, "single_turn", 1000, 500),
-        ModelUsage(model.model, "single_turn", 1200, 600),
+        None, ModelUsage(model.model, "single_turn", 1200, 600),
     ]
     assert outcome.model_usage == (ModelUsage(model.model, "single_turn", 1200, 600),)
     policy = BillingPolicy.from_dict({

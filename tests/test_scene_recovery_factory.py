@@ -164,7 +164,7 @@ def test_clock_context_and_contract_versions_change_identity(portal, monkeypatch
     assert factory.scene_recovery_plan(item, package, game_id).generation_identity != original.generation_identity
     factory.generation_settings_store.put(game_id, original.generation_settings,
                                           factory.default_generation_settings())
-    monkeypatch.setattr(factory_module, "PLATFORM_SCENE_CONTRACT", "platform-ordinary-scene-v2")
+    monkeypatch.setattr(factory_module, "PLATFORM_SCENE_CONTRACT", "platform-ordinary-scene-v1")
     assert factory.scene_recovery_plan(item, package, game_id).generation_identity != original.generation_identity
 
 

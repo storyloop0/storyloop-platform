@@ -26,7 +26,7 @@ from storyloop_platform.portal.save_generation_settings import SaveGenerationSet
 from storyloop_platform.portal.sql_repository import SQLPlayerRepository
 from storyloop_platform.runtime.campaign import CampaignProgram, CampaignSession
 
-PLATFORM_SCENE_CONTRACT = "platform-ordinary-scene-v1"
+PLATFORM_SCENE_CONTRACT = "platform-ordinary-scene-v2"
 AGENTSCOPE_COMPATIBLE_CONTRACT = "agentscope-compatible-v1"
 
 

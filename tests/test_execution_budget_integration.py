@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 import httpx
+from httpx2 import Response as TransportResponse
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -217,7 +218,7 @@ def test_prepared_then_cached_turn_replay_sends_no_more_sdk_posts(portal, monkey
 
     def reply(request):
         posts.append(request)
-        return _completion('{"prose":"A quiet harbor."}')
+        return _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}')
 
     model, transport = sdk_model(monkeypatch, reply)
     portal.gameplay.factory.offline_models.model = model
@@ -285,7 +286,7 @@ def test_turn_scope_limits_actual_sdk_posts_before_world_commit(portal, monkeypa
 
     def invalid(request):
         requests.append(request)
-        return _completion("{}")
+        return TransportResponse(503, json={"error": {"message": "offline", "type": "server_error"}})
 
     model, transport = sdk_model(monkeypatch, invalid)
     portal.gameplay.factory.offline_models.model = model
@@ -319,9 +320,8 @@ def test_one_turn_shares_six_actual_posts_across_engine_and_guidance(portal, mon
 
     def reply(request):
         requests.append(request)
-        # The scene generation uses its full local three-send allowance before
-        # guidance starts, then guidance consumes the remaining three sends.
-        return _completion("{}" if len(requests) <= 2 else '{"prose":"A quiet harbor."}')
+        # One scene send commits; guidance consumes the next five sends.
+        return _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}') if len(requests) == 1 else _completion('{"prose":"A guidance note."}')
 
     model, transport = sdk_model(monkeypatch, reply)
     portal.gameplay.factory.offline_models.model = model
@@ -329,7 +329,7 @@ def test_one_turn_shares_six_actual_posts_across_engine_and_guidance(portal, mon
     game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
 
     async def guidance(*args, **kwargs):
-        for _ in range(4):
+        for _ in range(6):
             await model([Msg("player", "offline guidance", "user")], structured_model=Decision)
         raise AssertionError("the seventh send must not return")
 
@@ -434,7 +434,7 @@ def test_scope_starts_after_preferences_and_ends_after_view(portal, monkeypatch)
     from storyloop_platform.gameplay import turns as turn_module
 
     active = observe_execution_scope(monkeypatch)
-    model, transport = sdk_model(monkeypatch, lambda request: _completion('{"prose":"A quiet harbor."}'))
+    model, transport = sdk_model(monkeypatch, lambda request: _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}'))
     portal.gameplay.factory.offline_models.model = model
     player = portal.register("reader", "password-123")
     game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]

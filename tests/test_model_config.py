@@ -49,8 +49,10 @@ class ToolChoiceCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             store = SQLiteGameStore(str(Path(directory) / "game.sqlite3"))
             package.seed_game(store, "game")
             model = ModelFactory(config, env={"STORY_MODEL_API_KEY": "test-token"}).create_model("single_turn")
-            decision = {"prose": "你听见码头工放下缆绳。", "participants": ["dockhand"],
-                        "replies": [{"actor_id": "dockhand", "speech": "今天有船靠岸。"}]}
+            decision = {"beats": [
+                {"kind": "narration", "text": "你听见码头工放下缆绳。"},
+                {"kind": "dialogue", "actor_id": "dockhand", "text": "今天有船靠岸。"}],
+                "participants": ["dockhand"]}
             choices: list[str | None] = []
 
             async def completion(**kwargs: object) -> ChatCompletion:

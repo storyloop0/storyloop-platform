@@ -11,7 +11,7 @@ def test_portal_commits_status_once_and_replays_receipt(portal, monkeypatch, cap
     package = status_package(ScenarioPackage.load(EXAMPLE))
     monkeypatch.setattr(ScenarioPackage, 'load', classmethod(lambda cls, path: package))
     model = StructuredOfflineModel(lambda _: {
-        'prose': '你感到压力增加。',
+        'beats': [{'kind': 'narration', 'text': '你感到压力增加。'}],
         'status_changes': [{'id': 'pressure', 'delta': 1}],
     })
     portal.gameplay.factory.offline_models.model = model

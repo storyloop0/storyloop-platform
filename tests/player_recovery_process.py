@@ -73,9 +73,9 @@ def offline_transport(post_log: Path, *, exit_during_request: bool = False):
         if exit_during_request:
             os._exit(73)
         decision = {
-            "prose": "The dockhand lowers the rope and turns toward me.",
+            "beats": [{"kind": "narration", "text": "The dockhand lowers the rope and turns toward me."},
+                      {"kind": "dialogue", "actor_id": "dockhand", "text": "The morning boat is due soon."}],
             "participants": ["dockhand"],
-            "replies": [{"actor_id": "dockhand", "speech": "The morning boat is due soon."}],
             "delivery": "targets", "encounters": [],
         }
         return Response(200, json={

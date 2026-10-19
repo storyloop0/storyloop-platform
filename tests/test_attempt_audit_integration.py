@@ -67,7 +67,7 @@ def test_portal_turn_writes_model_execution_before_settlement_and_cache_replay(p
 
     def reply(request):
         responses.append(request)
-        return _completion('{"prose":"A quiet harbor."}', prompt_tokens=1200,
+        return _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}', prompt_tokens=1200,
                            completion_tokens=600)
 
     model, transport = sdk_model(monkeypatch, reply)
@@ -86,14 +86,14 @@ def test_portal_turn_writes_model_execution_before_settlement_and_cache_replay(p
     asyncio.run(transport.aclose())
 
 
-def test_fallback_audits_failed_and_success_usage_but_receipt_success_only(portal, monkeypatch):
+def test_transient_retry_audits_missing_then_success_usage_but_receipt_success_only(portal, monkeypatch):
     requests = []
 
     def fallback(request):
         requests.append(request)
-        return (_completion("{}", prompt_tokens=1000, completion_tokens=500)
+        return (Response(503, json={"error": {"message": "offline", "type": "server_error"}})
                 if len(requests) == 1 else
-                _completion('{"prose":"A quiet harbor."}', prompt_tokens=1200,
+                _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}', prompt_tokens=1200,
                             completion_tokens=600))
 
     model, transport = sdk_model(monkeypatch, fallback)
@@ -103,8 +103,8 @@ def test_fallback_audits_failed_and_success_usage_but_receipt_success_only(porta
     receipt = asyncio.run(portal.turn(player["token"], game, "Hello", "fallback"))
     audit = portal.turns.audits.list_for_request(game, "fallback")[0]
     assert [attempt["outcome"] for attempt in audit["attempts"]] == ["failed", "succeeded"]
-    assert audit["summary"]["known_input_tokens"] == 2200
-    assert audit["summary"]["known_output_tokens"] == 1100
+    assert audit["summary"]["known_input_tokens"] == 1200
+    assert audit["summary"]["known_output_tokens"] == 600
     assert receipt["billing"]["input_tokens"] == 1200
     assert receipt["billing"]["output_tokens"] == 600
     asyncio.run(model.client.close())
@@ -116,7 +116,7 @@ def test_failed_model_execution_retries_same_request_with_new_execution_id(porta
 
     def invalid(request):
         requests.append(request)
-        return _completion("{}", prompt_tokens=1000, completion_tokens=500)
+        return Response(503, json={"error": {"message": "offline", "type": "server_error"}})
 
     model, transport = sdk_model(monkeypatch, invalid, max_requests=2)
     portal.gameplay.factory.offline_models.model = model
@@ -130,8 +130,8 @@ def test_failed_model_execution_retries_same_request_with_new_execution_id(porta
     assert len(audits) == 2
     assert len({row["execution_id"] for row in audits}) == 2
     assert all(row["outcome"] == "failed" for row in audits)
-    assert all(row["summary"]["known_input_tokens"] == 2000 for row in audits)
-    assert all(row["summary"]["known_cost_milli_points"] > 0 for row in audits)
+    assert all(row["summary"]["known_input_tokens"] is None for row in audits)
+    assert all(row["summary"]["known_cost_milli_points"] is None for row in audits)
     assert all(row["summary"]["total_cost_milli_points"] is None for row in audits)
     assert portal.wallet(player["token"]) == wallet
     assert len(requests) == 4
@@ -266,13 +266,13 @@ def test_portal_sdk_sse_cancel_after_report_persists_known_usage(portal, monkeyp
     assert row["summary"]["total_cost_milli_points"] is None
 
 
-def test_portal_factory_deadline_keeps_earlier_reported_failure(portal, monkeypatch):
+def test_portal_factory_deadline_keeps_earlier_transport_failure(portal, monkeypatch):
     sends = []
 
     async def reply(request):
         sends.append(request)
         if len(sends) == 1:
-            return _completion("{}", prompt_tokens=1000, completion_tokens=500)
+            return Response(503, json={"error": {"message": "offline", "type": "server_error"}})
         await asyncio.Event().wait()
 
     model, transport = sdk_model(monkeypatch, reply, timeout_seconds=0.3)
@@ -297,10 +297,10 @@ def test_portal_factory_deadline_keeps_earlier_reported_failure(portal, monkeypa
     assert row["outcome"] == "failed"
     assert row["error_type"] == "GenerationTimeout"
     assert row["attempts"][0]["outcome"] == "failed"
-    assert row["attempts"][0]["usage_state"] == "reported"
-    assert row["summary"]["known_input_tokens"] == 1000
-    assert row["summary"]["known_output_tokens"] == 500
-    assert row["summary"]["known_cost_milli_points"] == 300
+    assert row["attempts"][0]["usage_state"] == "missing"
+    assert row["summary"]["known_input_tokens"] is None
+    assert row["summary"]["known_output_tokens"] is None
+    assert row["summary"]["known_cost_milli_points"] is None
     assert row["summary"]["total_cost_milli_points"] is None
 
 
@@ -311,7 +311,7 @@ def test_audit_finish_write_fault_keeps_successful_receipt(portal, monkeypatch, 
         raise RuntimeError("PRIVATE_AUDIT_SENTINEL")
 
     monkeypatch.setattr(repository, "finish", broken_finish)
-    model, transport = sdk_model(monkeypatch, lambda request: _completion('{"prose":"A quiet harbor."}'))
+    model, transport = sdk_model(monkeypatch, lambda request: _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}'))
     portal.gameplay.factory.offline_models.model = model
     player = portal.register("audit-fault-reader", "password-123")
     game = asyncio.run(portal.create_save(player["token"], "npc-chat"))["game_id"]
@@ -328,7 +328,7 @@ def test_prepared_settlement_replay_has_no_new_audit_or_model_send(portal, monke
 
     def reply(request):
         sends.append(request)
-        return _completion('{"prose":"A quiet harbor."}', prompt_tokens=1000,
+        return _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}', prompt_tokens=1000,
                            completion_tokens=500)
 
     model, transport = sdk_model(monkeypatch, reply)
@@ -372,7 +372,7 @@ def test_concurrent_players_capture_only_their_own_model_attempt(portal, monkeyp
         await asyncio.wait_for(both_entered.wait(), timeout=10)
         body = request.content.decode()
         tokens = 101 if "Alpha signal" in body else 202
-        return _completion('{"prose":"A quiet harbor."}', prompt_tokens=tokens,
+        return _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}', prompt_tokens=tokens,
                            completion_tokens=50)
 
     model, transport = sdk_model(monkeypatch, reply)
@@ -407,7 +407,7 @@ def test_preview_is_unbilled_but_records_usage_with_unknown_cost(portal, monkeyp
 
     def reply(request):
         sends.append(request)
-        return _completion('{"prose":"A quiet harbor."}', prompt_tokens=500,
+        return _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}', prompt_tokens=500,
                            completion_tokens=200)
 
     model, transport = sdk_model(monkeypatch, reply)
@@ -438,7 +438,7 @@ def test_preview_is_unbilled_but_records_usage_with_unknown_cost(portal, monkeyp
 def test_unbilled_standard_turn_records_usage_without_estimated_cost(portal, monkeypatch):
     model, transport = sdk_model(
         monkeypatch,
-        lambda request: _completion('{"prose":"A quiet harbor."}',
+        lambda request: _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}',
                                     prompt_tokens=700, completion_tokens=300),
     )
     portal.gameplay.factory.offline_models.model = model

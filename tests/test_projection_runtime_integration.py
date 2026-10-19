@@ -48,6 +48,14 @@ def test_source_inspection_uses_scaled_clock_and_matches_generation(portal):
     assert capture.requests[0] == projection.request
     assert capture.kwargs[0]['max_completion_tokens'] == projection.report.output_tokens
     assert 'max_tokens' not in capture.kwargs[0]
+    next_projection = engine.project_context(TurnInput('source-clock', 'What did you say?',
+                                                       'follow-up', package.version))
+    history = next_projection.request['npc_contexts'][0]['own_history']
+    assert history and all(item['evidence']['kind'] == 'legacy_unverified' for item in history)
+    visible = next_projection.request['recent_visible_beats']
+    assert visible and all(item['evidence']['kind'] == 'legacy_unverified' for item in visible)
+    assert next_projection.request['recent_player_actions'][0]['evidence']['kind'] == 'utterance'
+    assert next_projection.request['source_story_facts']
     before = factory.store.load('source-clock')
     with pytest.raises(ValueError, match='version'):
         engine.project_context(replace(turn, scenario_version='wrong'))
@@ -99,8 +107,9 @@ def test_actual_factory_output_cap_reaches_offline_sdk_wire(portal):
 
     async def completion(**kwargs):
         capture.append(kwargs)
-        decision = {'prose': 'The dockhand waves.', 'participants': ['dockhand'],
-                    'replies': [{'actor_id': 'dockhand', 'speech': 'Hello.'}]}
+        decision = {'beats': [{'kind': 'narration', 'text': 'The dockhand waves.'},
+                              {'kind': 'dialogue', 'actor_id': 'dockhand', 'text': 'Hello.'}],
+                    'participants': ['dockhand']}
         return ChatCompletion.model_validate({'id': 'offline', 'created': 0, 'model': 'offline',
             'object': 'chat.completion', 'usage': {'prompt_tokens': 7, 'completion_tokens': 3, 'total_tokens': 10},
             'choices': [{'finish_reason': 'tool_calls', 'index': 0, 'message': {'role': 'assistant', 'content': None,

@@ -30,8 +30,8 @@ def record(game_id="game", **changes):
                   nearby_actor_ids=("dockhand",), preference_hash="3" * 64,
                   scene=SceneTurn.model_validate({
                       "decision": {"intent": "speech", "target_ids": ["dockhand"]},
-                      "prose": "The dockhand sets down a rope.",
-                      "replies": [{"actor_id": "dockhand", "speech": "A ship arrived."}],
+                      "beats": [{"kind": "narration", "text": "The dockhand sets down a rope."},
+                                {"kind": "dialogue", "actor_id": "dockhand", "text": "A ship arrived."}],
                       "options": [{"label": "Ask", "input": "Ask about ships"},
                                   {"label": "Look", "input": "Read the notice"},
                                   {"label": "Walk", "input": "Walk along the pier"}],
