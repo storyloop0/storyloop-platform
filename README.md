@@ -218,6 +218,28 @@ SQL 存储已支持 Harness 的角色经历 checkpoint 来源与剧本校验；�
 
 </details>
 
+### 显式事实查询 API
+
+`POST /v1/saves/{game_id}/fact-queries` 面向普通 `freeform` / `interactive` 存档。调用方显式提供作者登记的事实键与当前可交流的 NPC：
+
+```http
+POST /v1/saves/{game_id}/fact-queries
+Authorization: Bearer <session-token>
+Content-Type: application/json
+
+{"request_id":"fact-001","fact_id":"harbor.opening_hours","speaker_id":"dockhand"}
+```
+
+`request_id` 为 1–64 位 URL-safe 字符；`fact_id`、`speaker_id` 为 1–256 字符的严格字符串，不允许空白或单独的 `*`。请求不接受额外字段、自由文本或客户端事实正文。没有事实列表接口；事实键由剧本作者与调用方约定。
+
+返回既有玩家 View，含有序对白 `segments`、状态和 `turn_id`；`suggestions`、`action_options` 为空，省略 `billing`。有权限且在有效期内的作者事实直接作答，其余事实使用统一未知回答，不暴露缺失、保密或过期的细分原因。此入口不调用模型、摘要、建议或玩家偏好服务，不查余额、不扣费、不写模型调用审计；零余额也可查询。普通存档的历史和续玩接口可读取结果。
+
+事实查询与普通行动共用请求 ID 空间，回执同时绑定请求类型、事实键与角色。同请求重复 POST 返回已保存结果；换事实、换角色或跨入口复用 ID 会被拒绝。生成结果已提交但回执尚未保存时，可携带原完整请求手动重试，由 Harness 续完待办并保存当前状态 View。客户端不应自动重试，也不要使用普通行动恢复接口恢复事实查询。
+
+同一存档有未完成普通行动的恢复上下文、待结算记录或孤立生成证据时，先处理原行动，再发起新事实查询；已经完成的事实回执仍可读取。战役、故事蓝图、审核预览和已结束故事的新查询不支持。网页选题及自然语言事实问题识别尚未接入。
+
+迁移 `0020_portal_turn_request_kind` 为旧回执保留 `turn` 类型及原哈希/正文；新事实回执记作 `fact_query`。数据库已有事实回执时会拒绝降级删除类型列，需要先规划数据迁移。
+
 ### 整轮执行与偏好策略
 
 `runtime.turn_max_requests` 默认 6，`runtime.turn_timeout_seconds` 默认 180 秒。场景、战役及其他兼容适配器调用共享该执行额度；预览和关闭计费的回合也受限。期限从预检查、剧本与偏好读取后开始，到视图构造完成结束，不包含排队/锁等待、SQL 审计收尾、积分结算、网络交付和后台记忆提炼。超限或超时返回固定 HTTP/SSE 错误，不自动重试；世界可能已经提交，成功用量扣费规则保持现有口径。
@@ -233,7 +255,7 @@ SQL 存储已支持 Harness 的角色经历 checkpoint 来源与剧本校验；�
 <details>
 <summary>服务装配与关闭生命周期</summary>
 
-`bootstrap.build_portal` 围绕同一个 SQL Engine 组装生产资源并负责关闭。`PlayerPortal` 完成请求鉴权后，把存档生命周期与查询交给 `GameplayService`，把回合执行与恢复交给 `TurnExecutionService`。两个服务共享内容访问、玩家操作锁与 `GameplayRuntime`；测试通过 `runtime_factory_builder` 注入离线运行时或模型实现。
+`bootstrap.build_portal` 围绕同一个 SQL Engine 组装生产资源并负责关闭。`PlayerPortal` 完成请求鉴权后，把存档生命周期与查询交给 `GameplayService`，把普通回合执行与恢复交给 `TurnExecutionService`，把显式事实查询交给 `FactQueryService`。三个服务共用同一存档访问器、玩家操作锁与 `GameplayRuntime` 实例；测试通过 `runtime_factory_builder` 注入离线运行时或模型实现。
 
 HTTP 与 CLI 使用同一个 `portal.operations` 管理耗时操作；请求断开不会取消已接收的回合。上传与序章生成采用异步命令，文件和记忆线程按实际完成状态跟踪。`await portal.shutdown()` 先停止接收新操作并通知记忆 worker，再等待 30 秒、取消后再等待 5 秒；仍未结束则显式报错并保留资源，由进程管理器决定终止。同步 `portal.close()` 只允许在操作已结束时调用。上述时限不包含服务器自身的请求排空和同步资源释放。
 
