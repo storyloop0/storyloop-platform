@@ -97,6 +97,8 @@ Private scenarios can be played by their owner; public catalog versions follow c
 
 Ordinary turns use `single_call`: history, experiences, and worldbook entries visible to the player and relevant NPCs are projected into one shared scene request. The model proposes structured changes; Harness validates them and commits events, state, and observations through the platform store adapter. The platform then handles usage and credit settlement.
 
+Ordinary scene generators now return ordered `beats` (narration or speaker-attributed dialogue), which the interactive view presents in that order; the scene schema rejects narration that repeats a complete dialogue answer. Custom scene model substitutes and offline fixtures must produce this contract too. Context sent to the scene model includes history provenance: recent player actions are identified as utterances, while the SQL adapter currently treats visible history as `legacy_unverified` and summaries as unverified. These labels help distinguish sources; they do not guarantee that generated prose is semantically factual. The independent novel and campaign presenters keep their own contracts, and strict fact queries remain a Harness-only entry point.
+
 ```mermaid
 sequenceDiagram
     participant Player as Player browser
@@ -126,6 +128,8 @@ sequenceDiagram
 Long-session context selects recent and relevant experiences from committed history while retaining original events; the current worldbook retrieves JSON entries.
 
 SQL storage supports Harness character checkpoint provenance and scenario validation. Upgrading clears old summary caches that have no verifiable sources while preserving events, observations, and world state. The platform does not yet configure an extra summarization model call; automatic compression needs explicit integration and quality and cost checks.
+
+Completed older turns remain available in history and keep their existing request IDs. An unfinished request with an old scene snapshot or uncertain generation marker is preserved and blocked for recovery with that original ID; the platform does not automatically migrate it or resend the model request. Inspect its recovery status and resolve it administratively before continuing that request.
 
 The diagram shows a successful ordinary scene and budget rejection, omitting validation failures, retries, and other story work. World commits and credit settlement are separate steps; there is no claim of atomic whole-campaign commits. NPC contexts represent identity, experience, and information perspectives, with no independent ReAct instance per NPC. The shared model sees multiple character contexts, so these projections do not provide hard information isolation. One ordinary scene generation does not mean openings, action suggestions, or an entire campaign make only one model call.
 
