@@ -113,6 +113,23 @@ def test_invalid_body_rejected_before_world_write(fact_api, change):
     assert counts(portal) == before
 
 
+def test_escaped_max_length_unicode_identifiers_reach_speaker_validation(fact_api):
+    portal, client, headers, _ = fact_api
+    identifier = "😀" * 256
+    body = json.dumps({"request_id": "unicode-boundary", "fact_id": identifier,
+                       "speaker_id": identifier}).encode("utf-8")
+    assert 4096 < len(body) <= 8192
+    before = counts(portal)
+
+    response = client.post("/v1/saves/fact-save/fact-queries", content=body,
+                           headers={**headers, "Content-Type": "application/json"})
+
+    assert response.status_code == 400, response.text
+    assert response.json()["commit_state"] == "not_started"
+    assert "reachable NPC speaker" in response.json()["detail"]
+    assert counts(portal) == before
+
+
 def test_auth_ownership_and_unreachable_speaker_rejected_before_write(fact_api):
     portal, client, headers, other = fact_api
     before = counts(portal)

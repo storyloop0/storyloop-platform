@@ -207,19 +207,19 @@ def create_app(portal: PlayerPortal, *, operation_shutdown_timeout: float = GRAC
             if content_type != "application/json":
                 return JSONResponse({"error": "Content-Type must be application/json"}, status_code=400)
         if request.method == "POST" and request.url.path.endswith("/fact-queries"):
-            max_bytes = 4096
+            max_bytes = 8192
             length = request.headers.get("content-length")
             if length is not None:
                 try:
                     if int(length) > max_bytes:
-                        return JSONResponse({"detail": "Fact query body exceeds 4 KiB"}, status_code=413)
+                        return JSONResponse({"detail": "Fact query body exceeds 8 KiB"}, status_code=413)
                 except ValueError:
                     return JSONResponse({"detail": "Invalid Content-Length"}, status_code=400)
             chunks = bytearray()
             async for chunk in request.stream():
                 chunks.extend(chunk)
                 if len(chunks) > max_bytes:
-                    return JSONResponse({"detail": "Fact query body exceeds 4 KiB"}, status_code=413)
+                    return JSONResponse({"detail": "Fact query body exceeds 8 KiB"}, status_code=413)
             request._body = bytes(chunks)
         response = await call_next(request)
         if request.url.path.startswith("/v1/"):
