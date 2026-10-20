@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from storyloop_harness import ScenarioPackage
-from storyloop_harness.world.facts import UNKNOWN_FACT_ANSWER
 from storyloop_platform.bootstrap import build_portal
 from storyloop_platform.config import load_settings
 from storyloop_platform.portal.http_api import create_app
@@ -96,7 +95,7 @@ def test_unknown_classes_share_one_answer(fact_api, fact_id):
     response = post(client, headers, {**QUERY, "request_id": fact_id.replace(".", "-"),
                                       "fact_id": fact_id})
     assert response.status_code == 200, response.text
-    assert response.json()["segments"][0]["text"] == UNKNOWN_FACT_ANSWER
+    assert response.json()["segments"][0]["text"] == "我不知道，或尚未确认。"
 
 
 @pytest.mark.parametrize("change", [
