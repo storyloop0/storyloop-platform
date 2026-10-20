@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Path, Query, Re
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from storyloop_harness.generation import (
     ExecutionRequestLimitExceeded, ExecutionTimeout,
     GenerationRequestLimitExceeded, GenerationTimeout,
@@ -25,7 +25,7 @@ from storyloop_platform.portal.service import PlayerPortal
 from storyloop_platform.portal.access import AccessDenied
 from storyloop_platform.portal.sql_repository import SESSION_TTL_SECONDS
 from storyloop_platform.portal.user_scenarios import MAX_ARCHIVE_BYTES
-from storyloop_platform.portal.turn_errors import TurnRecoveryRequired, turn_failure
+from storyloop_platform.portal.turn_errors import TurnInputError, TurnRecoveryRequired, turn_failure
 
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,13 @@ class SaveSettingsBody(BaseModel):
 class TurnBody(BaseModel):
     text: str
     request_id: str | None = None
+
+
+class FactQueryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    fact_id: str = Field(min_length=1, max_length=256)
+    speaker_id: str = Field(min_length=1, max_length=256)
 
 
 class PlayerMemorySettingsBody(BaseModel):
@@ -194,11 +201,26 @@ def create_app(portal: PlayerPortal, *, operation_shutdown_timeout: float = GRAC
                       or (request.url.path.startswith("/v1/manage/")
                           and request.url.path.endswith(("/decision", "/role", "/status", "/state")))
                       or request.url.path.endswith("/settings")
-                      or request.url.path.endswith(("/turns", "/turns/stream")))
+                      or request.url.path.endswith(("/turns", "/turns/stream", "/fact-queries")))
         if request.method in {"POST", "PUT", "PATCH"} and needs_json:
             content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
             if content_type != "application/json":
                 return JSONResponse({"error": "Content-Type must be application/json"}, status_code=400)
+        if request.method == "POST" and request.url.path.endswith("/fact-queries"):
+            max_bytes = 4096
+            length = request.headers.get("content-length")
+            if length is not None:
+                try:
+                    if int(length) > max_bytes:
+                        return JSONResponse({"detail": "Fact query body exceeds 4 KiB"}, status_code=413)
+                except ValueError:
+                    return JSONResponse({"detail": "Invalid Content-Length"}, status_code=400)
+            chunks = bytearray()
+            async for chunk in request.stream():
+                chunks.extend(chunk)
+                if len(chunks) > max_bytes:
+                    return JSONResponse({"detail": "Fact query body exceeds 4 KiB"}, status_code=413)
+            request._body = bytes(chunks)
         response = await call_next(request)
         if request.url.path.startswith("/v1/"):
             response.headers["Cache-Control"] = "no-store"
@@ -619,6 +641,37 @@ def create_app(portal: PlayerPortal, *, operation_shutdown_timeout: float = GRAC
             failure = turn_failure(error, body.request_id, message=str(mapped.detail),
                                    code="MODEL_UNAVAILABLE")
             return JSONResponse(status_code=mapped.status_code,
+                                content=failure_content({"detail": failure["message"], **failure}))
+
+    @app.post("/v1/saves/{game_id}/fact-queries", response_model=View,
+              response_model_exclude_unset=True)
+    async def fact_query(game_id: str, body: FactQueryBody,
+                         auth: str = Depends(token)) -> dict:
+        if not operations.accepting:
+            return JSONResponse(status_code=503, content=stopping_failure(body.request_id))
+        try:
+            view = await operations.run(
+                lambda: portal.fact_query(auth, game_id, body.request_id,
+                                          body.fact_id, body.speaker_id), name="fact-query")
+            return View.model_validate(view).model_dump(mode="json", exclude_unset=True)
+        except ValidationError:
+            logger.error("invalid completed fact query response")
+            failure = invalid_contract_failure(body.request_id)
+            return JSONResponse(status_code=500, content=failure_content({"detail": failure["message"], **failure}))
+        except ServiceStopping:
+            return JSONResponse(status_code=503, content=stopping_failure(body.request_id))
+        except (ValueError, KeyError, PermissionError) as error:
+            safe_message = (str(error) if isinstance(error, (TurnInputError, TurnRecoveryRequired,
+                                                              KeyError, PermissionError))
+                            else "事实查询未能确认；请使用原请求重试。")
+            failure = turn_failure(error, body.request_id, message=safe_message)
+            return JSONResponse(status_code=_http_error(error).status_code,
+                                content=failure_content({"detail": failure["message"], **failure}))
+        except Exception as error:
+            logger.error("fact query failed (%s)", type(error).__name__)
+            failure = turn_failure(error, body.request_id,
+                                   message="事实查询未能确认；请使用原请求重试。")
+            return JSONResponse(status_code=500,
                                 content=failure_content({"detail": failure["message"], **failure}))
 
     @app.post("/v1/saves/{game_id}/turns/stream")
