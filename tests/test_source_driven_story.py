@@ -156,8 +156,10 @@ class SourceDrivenStoryTests(unittest.TestCase):
             def fake_turn(request):
                 requests.append(request)
                 return {
-                    "prose": "你走向码头工，先问候了一声。她把绳索放好，说：“我叫阿岚，船还没进港。”",
-                    "replies": [{"actor_id": "dockhand", "speech": "我叫阿岚，船还没进港。"}],
+                    "beats": [
+                        {"kind": "narration", "text": "你走向码头工，先问候了一声。她把绳索放好。"},
+                        {"kind": "dialogue", "actor_id": "dockhand", "text": "我叫阿岚，船还没进港。"},
+                        {"kind": "dialogue", "actor_id": "dockhand", "text": "船期写在告示上。"}],
                     "participants": ["dockhand"], "delivery": "targets",
                     "encounters": [{"actor_id": "dockhand", "evidence": "我叫阿岚",
                                     "name_learned": True}],
@@ -201,6 +203,7 @@ class SourceDrivenStoryTests(unittest.TestCase):
                 self.assertEqual(asyncio.run(portal.resume_save(token, save_id))["opening"], "")
                 turn = asyncio.run(portal.turn(token, save_id, "我向阿岚打招呼。", "turn-1"))
                 self.assertIn("我叫阿岚，船还没进港", turn["body"])
+                self.assertEqual(turn["body"].count("我叫阿岚，船还没进港。"), 1)
                 self.assertEqual([actor["name"] for actor in portal.cast(token, save_id)], ["阿岚"])
                 self.assertEqual(requests[0]["source_story_tone"], "Use patient pacing.")
                 self.assertEqual(requests[0]["player_identity_knowledge"]["named_actor_ids"], [])

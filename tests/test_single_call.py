@@ -44,8 +44,9 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         state["campaign"] = program.initial_state(["dockhand"])
         self.store.create_game(replace(before, game_id="campaign", data=state))
         model = StructuredOfflineModel(lambda _: {
-            'prose': '你听见码头工放下缆绳。', 'participants': ['dockhand'],
-            'replies': [{'actor_id': 'dockhand', 'speech': '今天有船靠岸。'}],
+            'beats': [{'kind': 'narration', 'text': '你听见码头工放下缆绳。'},
+                      {'kind': 'dialogue', 'actor_id': 'dockhand', 'text': '今天有船靠岸。'}],
+            'participants': ['dockhand'],
         })
         clock = StoryClock(8, overnight_requires_rest=True)
         engine = TurnEngine(self.store, self.package, model, clock=clock, program=program)

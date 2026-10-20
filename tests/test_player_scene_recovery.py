@@ -75,7 +75,7 @@ def test_status_checks_ownership_before_evidence(portal):
 def native_portal(tmp_path, monkeypatch):
     sends = []
     transport = HttpAsyncClient(transport=MockTransport(lambda request: (
-        sends.append(request), _completion('{"prose":"A quiet harbor."}',
+        sends.append(request), _completion('{"beats":[{"kind":"narration","text":"A quiet harbor."}]}',
                                             prompt_tokens=1200, completion_tokens=600))[1]))
     original = OpenAIAsyncClient.__init__
 
@@ -237,24 +237,33 @@ def test_controlled_prepared_accepts_reported_zero_usage(native_portal, monkeypa
     assert len(sends) == 1
 
 
-def test_native_failed_attempt_fallback_bills_only_saved_success(native_portal, monkeypatch):
+def test_native_invalid_scene_sends_once_and_retains_failed_usage_audit(native_portal, monkeypatch):
     portal, sends = native_portal
     token = portal.register("fallback-reader", "password-123")["token"]
     game_id = asyncio.run(portal.create_save(token, "npc-chat"))["game_id"]
 
-    def first_invalid_then_valid(arguments, **kwargs):
-        if len(sends) == 1:
-            return _original_completion("{}", prompt_tokens=1000, completion_tokens=500)
-        return _original_completion(arguments, prompt_tokens=1200, completion_tokens=600)
+    wallet = portal.wallet(token)
+    before = portal.gameplay.store.load(game_id)
 
-    monkeypatch.setattr(__import__(__name__), "_completion", first_invalid_then_valid)
-    result = asyncio.run(portal.turn(token, game_id, "look", "fallback"))
+    def invalid_scene(arguments, **kwargs):
+        return _original_completion("{}", prompt_tokens=1000, completion_tokens=500)
+
+    monkeypatch.setattr(__import__(__name__), "_completion", invalid_scene)
+    with pytest.raises(TurnGenerationUncertain):
+        asyncio.run(portal.turn(token, game_id, "look", "fallback"))
     audit = portal.turns.audits.list_for_request(game_id, "fallback")[0]
-    assert len(sends) == 2
-    assert [attempt["outcome"] for attempt in audit["attempts"]] == ["failed", "succeeded"]
-    assert audit["summary"]["known_input_tokens"] == 2200
-    assert result["billing"]["model_calls"] == 1
-    assert result["billing"]["input_tokens"] == 1200
+    assert len(sends) == 1
+    assert [attempt["outcome"] for attempt in audit["attempts"]] == ["failed"]
+    assert audit["summary"]["known_input_tokens"] == 1000
+    assert audit["summary"]["known_output_tokens"] == 500
+    assert portal.wallet(token) == wallet
+    assert portal.gameplay.store.load(game_id) == before
+    assert portal.gameplay.store.generated_scene_snapshot(game_id, "portal-fallback") is None
+    assert portal.turn_recovery_status(token, game_id, "fallback",
+            hashlib.sha256(b"look").hexdigest())["reason_code"] == "GENERATION_UNCERTAIN"
+    with pytest.raises(TurnGenerationUncertain):
+        asyncio.run(portal.turn(token, game_id, "look", "fallback"))
+    assert len(sends) == 1
 
 
 def test_completed_native_story_rejects_new_request_before_context_or_model(native_portal, monkeypatch):

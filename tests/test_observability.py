@@ -82,8 +82,9 @@ class ObservabilityTests(unittest.IsolatedAsyncioTestCase):
             client = SessionClient()
             session = TurnEngine(
                 store, package, StructuredOfflineModel(lambda _: {
-                    'prose': '你听见码头工放下缆绳。', 'participants': ['dockhand'],
-                    'replies': [{'actor_id': 'dockhand', 'speech': '今天有船靠岸。'}],
+                    'beats': [{'kind': 'narration', 'text': '你听见码头工放下缆绳。'},
+                              {'kind': 'dialogue', 'actor_id': 'dockhand', 'text': '今天有船靠岸。'}],
+                    'participants': ['dockhand'],
                 }), max_steps=2, telemetry=LangfuseTelemetry(client),
             )
             fake_langfuse = SimpleNamespace(propagate_attributes=propagate_attributes)
@@ -126,8 +127,9 @@ class ObservabilityTests(unittest.IsolatedAsyncioTestCase):
             package.seed_game(store, "game")
             client = FakeLangfuse()
             model = StructuredOfflineModel(lambda _: {
-                'prose': '你听见码头工放下缆绳。', 'participants': ['dockhand'],
-                'replies': [{'actor_id': 'dockhand', 'speech': '今天有船靠岸。'}],
+                'beats': [{'kind': 'narration', 'text': '你听见码头工放下缆绳。'},
+                          {'kind': 'dialogue', 'actor_id': 'dockhand', 'text': '今天有船靠岸。'}],
+                'participants': ['dockhand'],
             })
             session = TurnEngine(store, package, model, telemetry=LangfuseTelemetry(client))
             projection = session.project_context(TurnInput("game", "hello", "one", package.version))

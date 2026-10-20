@@ -5,6 +5,7 @@ import hashlib
 from dataclasses import replace
 
 import pytest
+from httpx2 import Response
 from sqlalchemy import text as sql_text
 from sqlalchemy import event
 from openai import AsyncClient as OpenAIAsyncClient
@@ -13,8 +14,7 @@ from storyloop_platform.portal.http_api import create_app
 import json
 
 from test_player_scene_recovery import native_portal, _save
-from test_attempt_audit_integration import sdk_model
-from test_generation_budget_integration import _completion
+from test_attempt_audit_integration import BlockingUsageStream, sdk_model
 from storyloop_harness.generation import GenerationTimeout
 from storyloop_platform.portal.turn_errors import TurnGenerationUncertain, TurnRecoveryRequired
 from storyloop_platform.gameplay import turns as turns_module
@@ -196,15 +196,15 @@ def test_native_timeout_keeps_measured_usage_and_original_audit(native_portal, m
     portal, sends = native_portal
     token, game_id = _save(portal)
     requests = []
+    stream = BlockingUsageStream(1000, 500)
 
     async def reply(request):
         requests.append(request)
-        if len(requests) == 1:
-            return _completion("{}", prompt_tokens=1000, completion_tokens=500)
-        await asyncio.Event().wait()
+        return Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
 
     monkeypatch.setattr(OpenAIAsyncClient, "__init__", _OPENAI_INIT)
     model, transport = sdk_model(monkeypatch, reply, timeout_seconds=0.3)
+    model.stream = True
     monkeypatch.setattr(portal.gameplay.factory.models, "create_resolved_model",
                         lambda **kwargs: model)
     try:
@@ -214,15 +214,25 @@ def test_native_timeout_keeps_measured_usage_and_original_audit(native_portal, m
         asyncio.run(model.client.close())
         asyncio.run(transport.aclose())
     assert isinstance(caught.value.__cause__, GenerationTimeout)
-    audit = portal.turns.audits.list_for_request(game_id, "timeout")[0]
+    audits = portal.turns.audits.list_for_request(game_id, "timeout")
+    assert len(audits) == 1
+    audit = audits[0]
     assert audit["outcome"] == "failed"
     assert audit["error_type"] == "GenerationTimeout"
     assert audit["attempts"][0]["outcome"] == "failed"
     assert audit["attempts"][0]["usage_state"] == "reported"
+    assert audit["attempts"][0]["stream_complete"] is False
     assert audit["summary"]["known_input_tokens"] == 1000
     assert audit["summary"]["known_output_tokens"] == 500
     assert audit["summary"]["total_cost_milli_points"] is None
-    assert len(requests) >= 2
+    assert portal.turn_recovery_status(token, game_id, "timeout",
+            hashlib.sha256(b"look").hexdigest())["reason_code"] == "GENERATION_UNCERTAIN"
+    with pytest.raises(TurnGenerationUncertain):
+        asyncio.run(portal.turn(token, game_id, "look", "timeout"))
+    assert portal.turns.audits.list_for_request(game_id, "timeout") == audits
+    assert len(requests) == 1
+    assert stream.waiting.is_set()
+    assert stream.closed
     assert sends == []
 
 

@@ -18,6 +18,7 @@ from storyloop_harness.advanced import (
 from storyloop_platform.adapters.store import SQLiteGameStore
 from storyloop_platform.adapters.sql_database import open_database, sqlite_url, upgrade_database
 from storyloop_platform.adapters.sql_store import SQLGameStore
+from legacy_scene_fixture import legacy_scene_record
 
 
 def record(game_id="game", **changes):
@@ -30,8 +31,8 @@ def record(game_id="game", **changes):
                   nearby_actor_ids=("dockhand",), preference_hash="3" * 64,
                   scene=SceneTurn.model_validate({
                       "decision": {"intent": "speech", "target_ids": ["dockhand"]},
-                      "prose": "The dockhand sets down a rope.",
-                      "replies": [{"actor_id": "dockhand", "speech": "A ship arrived."}],
+                      "beats": [{"kind": "narration", "text": "The dockhand sets down a rope."},
+                                {"kind": "dialogue", "actor_id": "dockhand", "text": "A ship arrived."}],
                       "options": [{"label": "Ask", "input": "Ask about ships"},
                                   {"label": "Look", "input": "Read the notice"},
                                   {"label": "Walk", "input": "Walk along the pier"}],
@@ -144,7 +145,10 @@ def test_pre_marker_migration_preserves_snapshot_bytes_and_world(tmp_path):
     config.set_main_option("sqlalchemy.url", url)
     command.upgrade(config, "0018_turn_recovery_contexts")
     engine = open_database(url)
-    saved = record()
+    saved = legacy_scene_record(record())
+    assert saved.metadata()["generation_contract_version"] == 1
+    assert "prose" in saved.metadata()["scene"]
+    assert "beats" not in saved.metadata()["scene"]
     original_world = Snapshot("game", 0, 0, {"world": {"flag": False}})
     try:
         old_store = SQLGameStore(engine)

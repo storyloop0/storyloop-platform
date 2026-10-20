@@ -42,9 +42,10 @@ class PricedOfflineModel(OfflineModel):
         request = json.loads(content)
         if 'source_story_milestones' in request:
             result = SimpleNamespace(metadata={
-                "prose": "The visitor reaches the harbor. A worker pauses by the dock and waves. "
-                         "After a quiet conversation, the visitor says goodbye and walks toward the market.",
-                "replies": [{"actor_id": "dockhand", "speech": "Welcome to the harbor."}],
+                "beats": [
+                    {"kind": "narration", "text": "The visitor reaches the harbor. A worker pauses by the dock and waves."},
+                    {"kind": "dialogue", "actor_id": "dockhand", "text": "Welcome to the harbor."},
+                    {"kind": "narration", "text": "After a quiet conversation, the visitor says goodbye and walks toward the market."}],
                 "participants": ["dockhand"], "delivery": "targets", "encounters": [],
                 "milestones_fulfilled": ["ending"], "options": [
                     {"label": "Look around", "input": "I look around the harbor."},

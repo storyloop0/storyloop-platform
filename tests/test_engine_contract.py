@@ -22,7 +22,8 @@ def test_plain_status_change_is_validated_before_prose_commit_and_applied_once(w
     store, base = world
     package = status_package(base)
     package.seed_game(store, 'status')
-    model = StructuredOfflineModel(lambda _: {'prose': '你感到压力增加。',
+    model = StructuredOfflineModel(lambda _: {'beats': [
+        {'kind': 'narration', 'text': '你感到压力增加。'}],
         'status_changes': [{'id': 'pressure', 'delta': delta}]})
     engine = TurnEngine(store, package, model)
 

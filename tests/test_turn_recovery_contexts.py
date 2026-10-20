@@ -178,7 +178,7 @@ def test_snapshot_base_mismatch_rejects_repeat(setup):
         preference_hash="2" * 64,
         scene=SceneTurn.model_validate({
             "decision": {"intent": "speech", "target_ids": []},
-            "prose": "The harbor is quiet.", "replies": [],
+            "beats": [{"kind": "narration", "text": "The harbor is quiet."}],
             "options": [{"label": "Look", "input": "Look around"},
                         {"label": "Wait", "input": "Wait here"},
                         {"label": "Leave", "input": "Leave the harbor"}],
