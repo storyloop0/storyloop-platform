@@ -14,6 +14,7 @@ from storyloop_platform.adapters.telemetry import configured_telemetry
 from storyloop_platform.config import ModelFactory, PlatformResources, PlatformSettings
 from storyloop_platform.gameplay.access import GameAccess
 from storyloop_platform.gameplay.factory import RuntimeFactory, RuntimeFactoryBuilder
+from storyloop_platform.gameplay.fact_queries import FactQueryService
 from storyloop_platform.gameplay.locks import PlayerTurnLocks
 from storyloop_platform.gameplay.service import GameplayService
 from storyloop_platform.gameplay.turns import TurnExecutionService
@@ -140,6 +141,9 @@ def build_portal(
             recovery_contexts=SQLTurnRecoveryContexts(engine),
             execution_budget=ExecutionBudget(settings.runtime.turn_max_requests,
                                              settings.runtime.turn_timeout_seconds))
+        fact_queries = FactQueryService(
+            store=store, accounts=accounts, game_access=game_access,
+            moderation=moderation, factory=factory, player_locks=player_locks)
 
         def guarded_close() -> None:
             operations.close()
@@ -165,7 +169,7 @@ def build_portal(
             settings=settings, resources=resources, db_path=selected_db, accounts=accounts,
             access=access, invitations=invitations, user_scenarios=user_scenarios,
             moderation=moderation, billing=billing, memory_service=memory_service,
-            gameplay=gameplay, turns=turns, operations=operations,
+            gameplay=gameplay, turns=turns, fact_queries=fact_queries, operations=operations,
             close_resources=guarded_close, shutdown_resources=shutdown_resources)
     except BaseException as error:
         try:

@@ -156,19 +156,36 @@ class SQLPlayerRepository:
         return self.get_turn_response_by_hash(game_id, request_id,
                 hashlib.sha256(text_input.encode()).hexdigest())
 
+    @staticmethod
+    def _fact_query_hash(fact_id: str, speaker_id: str) -> bytes:
+        identity = {"kind": "fact_query", "fact_id": fact_id, "speaker_id": speaker_id}
+        canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).digest()
+
+    def _get_response(self, game_id: str, request_id: str,
+                      request_kind: str, input_hash: bytes) -> dict | None:
+        with self.engine.connect() as db:
+            row = db.execute(text("""SELECT request_kind,input_hash,response_json
+                FROM portal_turns WHERE game_id=:game_id AND request_id=:request_id"""),
+                {"game_id": game_id, "request_id": request_id}).mappings().first()
+        if row is None:
+            return None
+        if row["request_kind"] != request_kind or not hmac.compare_digest(
+                row["input_hash"], input_hash):
+            raise ValueError("request ID already belongs to different input")
+        return json.loads(row["response_json"])
+
+    def get_fact_query_response(self, game_id: str, request_id: str,
+                                fact_id: str, speaker_id: str) -> dict | None:
+        return self._get_response(game_id, request_id, "fact_query",
+                                  self._fact_query_hash(fact_id, speaker_id))
+
     def get_turn_response_by_hash(self, game_id: str, request_id: str,
                                   input_hash: str) -> dict | None:
         if type(input_hash) is not str or not re.fullmatch(r"[0-9a-f]{64}", input_hash):
             raise ValueError("invalid input hash")
-        with self.engine.connect() as db:
-            row = db.execute(text("""SELECT input_hash,response_json FROM portal_turns
-                WHERE game_id=:game_id AND request_id=:request_id"""),
-                {"game_id": game_id, "request_id": request_id}).mappings().first()
-        if row is None:
-            return None
-        if not hmac.compare_digest(row["input_hash"], bytes.fromhex(input_hash)):
-            raise ValueError("request ID already belongs to different input")
-        return json.loads(row["response_json"])
+        return self._get_response(game_id, request_id, "turn", bytes.fromhex(input_hash))
 
     def latest_turn_response(self, game_id: str) -> dict | None:
         with self.engine.connect() as db:
@@ -201,17 +218,30 @@ class SQLPlayerRepository:
 
     def store_turn_response(self, game_id: str, request_id: str, text_input: str,
                             response: dict) -> None:
+        self._store_response(game_id, request_id, "turn",
+                             hashlib.sha256(text_input.encode()).digest(), text_input,
+                             response)
+
+    def store_fact_query_response(self, game_id: str, request_id: str,
+                                  fact_id: str, speaker_id: str, response: dict) -> None:
+        self._store_response(game_id, request_id, "fact_query",
+                             self._fact_query_hash(fact_id, speaker_id),
+                             "询问已登记事实", response)
+
+    def _store_response(self, game_id: str, request_id: str, request_kind: str,
+                        input_hash: bytes, input_text: str, response: dict) -> None:
         try:
             with self.engine.begin() as db:
                 db.execute(text("""INSERT INTO portal_turns
-                    (game_id,request_id,input_hash,input_text,response_json,created_order)
-                    VALUES (:game_id,:request_id,:input_hash,:input_text,:response_json,:created_order)"""),
+                    (game_id,request_id,request_kind,input_hash,input_text,response_json,created_order)
+                    VALUES (:game_id,:request_id,:request_kind,:input_hash,:input_text,
+                            :response_json,:created_order)"""),
                     {"game_id": game_id, "request_id": request_id,
-                     "input_hash": hashlib.sha256(text_input.encode()).digest(),
-                     "input_text": text_input,
+                     "request_kind": request_kind, "input_hash": input_hash,
+                     "input_text": input_text,
                      "response_json": json.dumps(response, ensure_ascii=False),
                      "created_order": time.time_ns()})
         except IntegrityError as error:
-            cached = self.get_turn_response(game_id, request_id, text_input)
+            cached = self._get_response(game_id, request_id, request_kind, input_hash)
             if cached != response:
                 raise ValueError("request ID already has a different response") from error

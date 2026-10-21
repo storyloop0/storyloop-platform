@@ -9,6 +9,7 @@ from storyloop_harness.advanced import TurnProgress
 
 from storyloop_platform.config import PlatformSettings, PlatformResources
 from storyloop_platform.gameplay.service import GameplayService
+from storyloop_platform.gameplay.fact_queries import FactQueryService
 from storyloop_platform.gameplay.turns import TurnExecutionService
 from storyloop_platform.lifecycle import OperationSupervisor, GRACE_TIMEOUT, CANCEL_TIMEOUT
 from storyloop_platform.memory.service import PlayerMemoryService
@@ -28,7 +29,8 @@ class PlayerPortal:
                  invitations: InvitationService, user_scenarios: UserScenarioService,
                  moderation: ScenarioModerationService, billing: SQLBillingRepository | None,
                  memory_service: PlayerMemoryService, gameplay: GameplayService,
-                 turns: TurnExecutionService, operations: OperationSupervisor,
+                 turns: TurnExecutionService, fact_queries: FactQueryService,
+                 operations: OperationSupervisor,
                  close_resources: Callable[[], None],
                  shutdown_resources: Callable[[float, float], Awaitable[None]]) -> None:
         self.settings = settings
@@ -43,6 +45,7 @@ class PlayerPortal:
         self.memory_service = memory_service
         self.gameplay = gameplay
         self.turns = turns
+        self.fact_queries = fact_queries
         self.operations = operations
         self._close_resources = close_resources
         self._shutdown_resources = shutdown_resources
@@ -221,6 +224,11 @@ class PlayerPortal:
     async def turn(self, token: str, game_id: str, text: str,
                    request_id: str | None = None, progress: TurnProgress | None = None) -> dict:
         return await self.turns.turn(self.accounts.resolve_token(token), game_id, text, request_id, progress)
+
+    async def fact_query(self, token: str, game_id: str, request_id: str,
+                         fact_id: str, speaker_id: str) -> dict:
+        return await self.fact_queries.query(self.accounts.resolve_token(token),
+                                             game_id, request_id, fact_id, speaker_id)
 
     def turn_recovery_status(self, token: str, game_id: str,
                              request_id: str, input_hash: str) -> dict:

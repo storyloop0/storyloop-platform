@@ -94,6 +94,9 @@ def _packages(root: Path) -> Path:
             {"id": field, "label": field.title(), "path": ["contract_status", field],
              **({"bounds": {"min": 0, "max": 10, "max_delta": 1}} if name == "freeform" and field == "count" else {})}
             for field in ("flag", "count", "text")]
+        if name == "freeform":
+            manifest["facts"] = [{"id": "harbor.answer", "text": "The harbor bell rings at noon.",
+                                  "known_by": ["dockhand"], "disclose_to": ["player"]}]
         _write(manifest_path, manifest)
     program = {"id": "harbor-freeform", "ticks_per_day": 4, "final_tick": 4, "steps": [
         {"id": "arrival", "at": 0, "kind": "scene", "text": "A quiet harbor."},
@@ -190,6 +193,12 @@ def export_corpus(root: Path) -> list[dict]:
                 base = f"/v1/saves/{game}"
                 response("resume:intro", "View", "POST", base + "/resume")
                 response("history:intro", "History", "GET", base + "/history")
+                fact_game = create("freeform")
+                fact_base = f"/v1/saves/{fact_game}"
+                fact = response("fact:known", "View", "POST", fact_base + "/fact-queries",
+                                json=dict(request_id="fact-contract", fact_id="harbor.answer",
+                                          speaker_id="dockhand"))
+                assert fact["segments"][0]["text"] == "The harbor bell rings at noon."
                 turn = dict(text="Hello", request_id="http-turn")
                 billed = response("turn:freeform", "View", "POST", base + "/turns", json=turn)
                 replay = response("replay:freeform", "View", "POST", base + "/turns", json=turn)

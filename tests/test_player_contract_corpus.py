@@ -12,6 +12,8 @@ def test_actual_handler_corpus_covers_modes_billing_and_failures(tmp_path):
     for item in corpus:
         parsers[item["kind"]](item["payload"])
     views = [item["payload"] for item in corpus if item["kind"] == "View"]
+    assert any(item["name"] == "fact:known" and item["payload"]["turn_id"] == "portal-fact-contract"
+               for item in corpus)
     assert {view["mode"] for view in views} == {"campaign", "freeform"}
     assert {view["presentation_mode"] for view in views} == {"novel", "interactive"}
     assert any(view["billing"]["model_calls"] > 0 for view in views if "billing" in view)

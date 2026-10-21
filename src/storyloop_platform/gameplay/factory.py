@@ -50,6 +50,8 @@ class GameplayRuntime(Protocol):
     def engine(self, item: GameListing, package: ScenarioPackage, game_id: str, *,
                overnight_requires_rest: bool = False,
                program: CampaignProgram | None = None) -> TurnExecutor: ...
+    def fact_query_engine(self, item: GameListing, package: ScenarioPackage,
+                          game_id: str) -> TurnEngine: ...
     def campaign(self, item: GameListing, package: ScenarioPackage,
                  game_id: str) -> tuple[CampaignProgram, CampaignSession]: ...
     def novel_presenter(self, package: ScenarioPackage, game_id: str) -> NovelTurnNarrator: ...
@@ -215,6 +217,21 @@ class RuntimeFactory:
         if len(self._turn_engines) > 128:
             self._turn_engines.pop(next(iter(self._turn_engines)))
         return session
+
+    def fact_query_engine(self, item: GameListing, package: ScenarioPackage,
+                          game_id: str) -> TurnEngine:
+        """Construct a fact-only engine without model configuration or credentials."""
+        require_supported_save(self.store, game_id)
+        clock = (StoryClock(package.ticks_per_day * item.turns_per_story_tick)
+                 if package.ticks_per_day is not None else None)
+
+        class ForbiddenFactModel:
+            async def __call__(self, *args: object, **kwargs: object) -> object:
+                raise RuntimeError("fact query cannot invoke a model")
+
+        return TurnEngine(self.store, package, ForbiddenFactModel(), clock=clock,
+                          max_responders=self.settings.runtime.max_npc_replies,
+                          max_steps=self.settings.runtime.max_steps, telemetry=self.telemetry)
 
     def require_credentials(self) -> None:
         self.models.require_credentials()
